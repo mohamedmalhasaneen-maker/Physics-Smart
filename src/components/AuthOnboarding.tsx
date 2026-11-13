@@ -1,19 +1,32 @@
 import React, { useState } from 'react';
 import {
   auth,
+  extractFirebaseAuthCode,
+  getAuthErrorMessage,
   googleProvider,
+  isValidEmailAddress,
   signInWithPopup,
   signInWithEmailAndPassword,
-  createUserWithEmailAndPassword,
   sendPasswordResetEmail,
   signOut,
 } from '../lib/firebase';
-import { updateProfile } from 'firebase/auth';
 import { EDUCATIONAL_TRACKS } from '../data/tracks';
 import { Language, ThemeMode, TrackId, UserProfile } from '../types/physics';
 import { tFor } from '../i18n/translations';
 import { PhysicsAmbientBg } from './PhysicsAmbientBg';
-import { Atom, ArrowRight, ArrowLeft, CheckCircle2, Globe, Moon, Sun, ShieldCheck } from 'lucide-react';
+import {
+  Atom,
+  ArrowRight,
+  ArrowLeft,
+  CheckCircle2,
+  Eye,
+  EyeOff,
+  Globe,
+  Moon,
+  Sun,
+  ShieldCheck,
+  AlertCircle,
+} from 'lucide-react';
 
 interface AuthOnboardingProps {
   lang: Language;
@@ -22,6 +35,13 @@ interface AuthOnboardingProps {
   onToggleTheme: () => void;
   firebaseUser: any | null;
   userProfile: UserProfile | null;
+  onRegisterWithEmail: (input: {
+    fullName: string;
+    email: string;
+    password: string;
+    track: TrackId;
+    grade: string;
+  }) => Promise<void>;
   onSaveTrackSelection: (track: TrackId, grade: string, displayName?: string) => Promise<void>;
   onCancelSwitch?: () => void;
 }
@@ -33,6 +53,7 @@ export function AuthOnboarding({
   onToggleTheme,
   firebaseUser,
   userProfile,
+  onRegisterWithEmail,
   onSaveTrackSelection,
   onCancelSwitch,
 }: AuthOnboardingProps) {
@@ -40,7 +61,15 @@ export function AuthOnboarding({
   const [authTab, setAuthTab] = useState<'signin' | 'signup' | 'reset'>('signin');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [fullName, setFullName] = useState('');
+  const [signupTrack, setSignupTrack] = useState<TrackId>('thanawiya');
+  const signupTrackDef = EDUCATIONAL_TRACKS.find((tr) => tr.id === signupTrack) || EDUCATIONAL_TRACKS[0];
+  const [signupGrade, setSignupGrade] = useState<string>(signupTrackDef.grades[0].id);
+
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [suggestSignIn, setSuggestSignIn] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [infoMsg, setInfoMsg] = useState('');
   const [busy, setBusy] = useState(false);
@@ -54,46 +83,151 @@ export function AuthOnboarding({
     userProfile?.grade || currentTrackDef.grades[0].id
   );
 
+  const switchAuthTab = (tab: 'signin' | 'signup' | 'reset') => {
+    setAuthTab(tab);
+    setErrorMsg('');
+    setInfoMsg('');
+    setSuggestSignIn(false);
+    if (tab !== 'signup') {
+      setConfirmPassword('');
+    }
+  };
+
   const handleGoogleSignIn = async () => {
     setBusy(true);
     setErrorMsg('');
+    setInfoMsg('');
+    setSuggestSignIn(false);
     try {
       await signInWithPopup(auth, googleProvider);
-    } catch (err: any) {
-      setErrorMsg(err?.message || 'Google Sign-In failed.');
+    } catch (err: unknown) {
+      setErrorMsg(getAuthErrorMessage(err, lang));
     } finally {
       setBusy(false);
     }
   };
 
-  const handleEmailAuth = async (e: React.FormEvent) => {
+  const handleSignInSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setBusy(true);
     setErrorMsg('');
     setInfoMsg('');
+    setSuggestSignIn(false);
+
+    const cleanEmail = email.trim();
+    if (!isValidEmailAddress(cleanEmail)) {
+      setErrorMsg(
+        lang === 'ar'
+          ? 'يرجى إدخال بريد إلكتروني صحيح (Gmail أو Outlook أو Yahoo أو أي بريد آخر).'
+          : 'Please enter a valid email address (Gmail, Outlook, Yahoo, or any valid domain).'
+      );
+      return;
+    }
+    if (!password) {
+      setErrorMsg(lang === 'ar' ? 'يرجى إدخال كلمة المرور.' : 'Please enter your password.');
+      return;
+    }
+
+    setBusy(true);
     try {
-      if (authTab === 'signin') {
-        await signInWithEmailAndPassword(auth, email, password);
-      } else if (authTab === 'signup') {
-        const cred = await createUserWithEmailAndPassword(auth, email, password);
-        if (fullName.trim()) {
-          await updateProfile(cred.user, { displayName: fullName.trim() });
-        }
-      } else {
-        await sendPasswordResetEmail(auth, email);
-        setInfoMsg(t.auth.resetSuccess);
+      // Strictly use signInWithEmailAndPassword for existing-account login
+      await signInWithEmailAndPassword(auth, cleanEmail, password);
+    } catch (err: unknown) {
+      setErrorMsg(getAuthErrorMessage(err, lang));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleSignUpSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMsg('');
+    setInfoMsg('');
+    setSuggestSignIn(false);
+
+    const cleanName = fullName.trim();
+    const cleanEmail = email.trim();
+
+    if (cleanName.length < 2) {
+      setErrorMsg(
+        lang === 'ar' ? 'يرجى إدخال الاسم الكامل (حرفان على الأقل).' : 'Please enter your full name (at least 2 characters).'
+      );
+      return;
+    }
+    if (!isValidEmailAddress(cleanEmail)) {
+      setErrorMsg(
+        lang === 'ar'
+          ? 'صيغة البريد الإلكتروني غير صحيحة. يمكنك التسجيل بأي بريد صحيح مثل Gmail أو Outlook أو Yahoo.'
+          : 'Invalid email format. You may register with any valid email such as Gmail, Outlook, or Yahoo.'
+      );
+      return;
+    }
+    if (password.length < 6) {
+      setErrorMsg(
+        lang === 'ar'
+          ? 'يجب أن تتكون كلمة المرور من 6 أحرف على الأقل.'
+          : 'Password must be at least 6 characters long.'
+      );
+      return;
+    }
+    if (password !== confirmPassword) {
+      setErrorMsg(
+        lang === 'ar'
+          ? 'كلمتا المرور غير متطابقتين. يرجى التأكد من تطابق كلمة المرور وتأكيدها.'
+          : 'Passwords do not match. Please verify both password fields.'
+      );
+      return;
+    }
+    if (!signupTrack || !signupGrade) {
+      setErrorMsg(
+        lang === 'ar'
+          ? 'يرجى اختيار النظام التعليمي والصف الدراسي.'
+          : 'Please select your educational system and grade level.'
+      );
+      return;
+    }
+
+    setBusy(true);
+    try {
+      await onRegisterWithEmail({
+        fullName: cleanName,
+        email: cleanEmail,
+        password,
+        track: signupTrack,
+        grade: signupGrade,
+      });
+    } catch (err: unknown) {
+      const code = extractFirebaseAuthCode(err);
+      if (code === 'auth/email-already-in-use') {
+        setSuggestSignIn(true);
       }
-    } catch (err: any) {
-      const code = err?.code || '';
-      if (code === 'auth/operation-not-allowed') {
-        setErrorMsg(
-          lang === 'ar'
-            ? 'تسجيل البريد الإلكتروني غير مُفعّل في إعدادات Firebase بعد — يمكنك الدخول فورًا بزر Google أو تفعيل Email/Password من Firebase Console.'
-            : 'Email/Password sign-in is not yet enabled in Firebase Console — use Google Sign-In above or enable Email/Password provider in Firebase Authentication.'
-        );
-      } else {
-        setErrorMsg(err?.message || 'Authentication error.');
-      }
+      setErrorMsg(getAuthErrorMessage(err, lang));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleResetSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMsg('');
+    setInfoMsg('');
+    setSuggestSignIn(false);
+
+    const cleanEmail = email.trim();
+    if (!isValidEmailAddress(cleanEmail)) {
+      setErrorMsg(
+        lang === 'ar'
+          ? 'يرجى إدخال البريد الإلكتروني المسجل بصيغة صحيحة.'
+          : 'Please enter a valid registered email address.'
+      );
+      return;
+    }
+
+    setBusy(true);
+    try {
+      await sendPasswordResetEmail(auth, cleanEmail);
+      setInfoMsg(t.auth.resetSuccess);
+    } catch (err: unknown) {
+      setErrorMsg(getAuthErrorMessage(err, lang));
     } finally {
       setBusy(false);
     }
@@ -104,8 +238,12 @@ export function AuthOnboarding({
     setErrorMsg('');
     try {
       await onSaveTrackSelection(selectedTrack, selectedGrade, editDisplayName);
-    } catch (err: any) {
-      setErrorMsg(err?.message || 'Failed to save selection.');
+    } catch (err: unknown) {
+      setErrorMsg(
+        lang === 'ar'
+          ? 'تعذر حفظ اختيار المسار حاليًا. حاول مرة أخرى.'
+          : 'Failed to save track selection. Please try again.'
+      );
     } finally {
       setBusy(false);
     }
@@ -130,7 +268,7 @@ export function AuthOnboarding({
           <div className="flex items-center gap-2.5 shrink-0">
             <button
               onClick={onToggleLang}
-              className="px-3 py-1.5 rounded-xl glass-btn-secondary text-xs font-medium flex items-center gap-1.5 whitespace-nowrap"
+              className="px-3 py-1.5 rounded-xl glass-btn-secondary text-xs font-medium flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
             >
               <Globe className="w-3.5 h-3.5 text-blue-600 dark:text-cyan-400" />
               {t.common.switchLang}
@@ -138,14 +276,14 @@ export function AuthOnboarding({
             <button
               onClick={onToggleTheme}
               aria-label="Toggle theme"
-              className="p-2 rounded-xl glass-btn-secondary"
+              className="p-2 rounded-xl glass-btn-secondary cursor-pointer"
             >
               {theme === 'dark' ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4 text-slate-700" />}
             </button>
             {firebaseUser && (
               <button
                 onClick={() => signOut(auth)}
-                className="px-3 py-1.5 rounded-xl text-xs font-medium text-rose-600 dark:text-rose-400 hover:bg-rose-500/12 border border-transparent hover:border-rose-500/20 transition-all whitespace-nowrap"
+                className="px-3 py-1.5 rounded-xl text-xs font-medium text-rose-600 dark:text-rose-400 hover:bg-rose-500/12 border border-transparent hover:border-rose-500/20 transition-all whitespace-nowrap cursor-pointer"
               >
                 {t.common.signOut}
               </button>
@@ -156,7 +294,7 @@ export function AuthOnboarding({
 
       <main className="relative z-10 flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-8 lg:py-12 glass-enter">
         {!firebaseUser ? (
-          /* STEP 1: AUTHENTICATION + HERO SHOWCASE */
+          /* STEP 1: SEPARATED SIGN IN / SIGN UP / PASSWORD RESET + HERO SHOWCASE */
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-stretch">
             <div className="lg:col-span-7 flex flex-col justify-between rounded-2xl glass-card overflow-hidden">
               <div className="relative h-56 sm:h-72 overflow-hidden bg-gradient-to-br from-slate-950 via-blue-950 to-indigo-950">
@@ -207,14 +345,26 @@ export function AuthOnboarding({
 
             {/* Auth Card */}
             <div className="lg:col-span-5 rounded-2xl glass-panel border p-6 sm:p-8 flex flex-col justify-center">
-              <div className="mb-6">
+              <div className="mb-5">
                 <h2 className="text-xl font-bold mb-1">
-                  {lang === 'ar' ? 'ابدأ رحلتك في الفيزياء' : 'Start Your Physics Journey'}
+                  {authTab === 'signin'
+                    ? t.auth.signInTab
+                    : authTab === 'signup'
+                      ? t.auth.signUpTab
+                      : t.auth.resetTab}
                 </h2>
                 <p className="text-xs text-slate-500 dark:text-slate-400">
-                  {lang === 'ar'
-                    ? 'سجّل الدخول لحفظ تقدمك، نتائجك، وخطتك الدراسية'
-                    : 'Sign in to sync your progress, exam scores, and study planner'}
+                  {authTab === 'signin'
+                    ? lang === 'ar'
+                      ? 'سجّل الدخول بحسابك للوصول الفوري إلى دروسك ونتائجك من أي جهاز'
+                      : 'Sign in with your account to access your synced progress from any device'
+                    : authTab === 'signup'
+                      ? lang === 'ar'
+                        ? 'أنشئ حساب طالب جديد باستخدام أي بريد إلكتروني (Gmail أو Outlook أو Yahoo وغيرها)'
+                        : 'Create a new student account with any valid email (Gmail, Outlook, Yahoo, etc.)'
+                      : lang === 'ar'
+                        ? 'أدخل بريدك الإلكتروني المسجل لاستلام رابط تعيين كلمة مرور جديدة'
+                        : 'Enter your registered email address to receive a password reset link'}
                 </p>
               </div>
 
@@ -222,7 +372,7 @@ export function AuthOnboarding({
                 type="button"
                 disabled={busy}
                 onClick={handleGoogleSignIn}
-                className="w-full py-3 px-4 rounded-xl glass-btn-primary font-semibold text-sm flex items-center justify-center gap-2.5 disabled:opacity-60"
+                className="w-full py-3 px-4 rounded-xl glass-btn-primary font-semibold text-sm flex items-center justify-center gap-2.5 disabled:opacity-60 cursor-pointer"
               >
                 <ShieldCheck className="w-4 h-4" />
                 {t.auth.googleBtn}
@@ -234,19 +384,16 @@ export function AuthOnboarding({
                 <div className="flex-1 h-px bg-slate-200/70 dark:bg-white/10" />
               </div>
 
+              {/* Clearly Separated Mode Switcher */}
               <div className="flex gap-1 p-1 rounded-xl glass-subcard mb-5">
                 {(['signin', 'signup', 'reset'] as const).map((tab) => (
                   <button
                     key={tab}
                     type="button"
-                    onClick={() => {
-                      setAuthTab(tab);
-                      setErrorMsg('');
-                      setInfoMsg('');
-                    }}
-                    className={`flex-1 py-1.5 px-2 rounded-lg text-xs font-medium transition-all whitespace-nowrap ${
+                    onClick={() => switchAuthTab(tab)}
+                    className={`flex-1 py-1.5 px-2 rounded-lg text-xs font-medium transition-all whitespace-nowrap cursor-pointer ${
                       authTab === tab
-                        ? 'bg-white/90 dark:bg-white/12 text-slate-900 dark:text-white shadow-sm'
+                        ? 'glass-btn-primary text-white shadow-sm'
                         : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
                     }`}
                   >
@@ -255,70 +402,294 @@ export function AuthOnboarding({
                 ))}
               </div>
 
-              <form onSubmit={handleEmailAuth} className="space-y-4">
-                {authTab === 'signup' && (
+              {/* FORM 1: SIGN IN */}
+              {authTab === 'signin' && (
+                <form onSubmit={handleSignInSubmit} className="space-y-4">
+                  <div>
+                    <label className="block text-xs font-medium mb-1">{t.auth.emailLabel}</label>
+                    <input
+                      type="email"
+                      required
+                      dir="ltr"
+                      autoComplete="email"
+                      placeholder={t.auth.emailPlaceholder}
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      className="w-full px-3.5 py-2.5 rounded-xl glass-input text-sm"
+                    />
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="block text-xs font-medium">{t.auth.passwordLabel}</label>
+                      <button
+                        type="button"
+                        onClick={() => switchAuthTab('reset')}
+                        className="text-[11px] font-medium text-blue-600 dark:text-cyan-400 hover:underline cursor-pointer"
+                      >
+                        {t.auth.goToReset}
+                      </button>
+                    </div>
+                    <div className="relative">
+                      <input
+                        type={showPassword ? 'text' : 'password'}
+                        required
+                        dir="ltr"
+                        autoComplete="current-password"
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        className="w-full px-3.5 py-2.5 pe-10 rounded-xl glass-input text-sm"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword((v) => !v)}
+                        aria-label={showPassword ? 'Hide password' : 'Show password'}
+                        className="absolute inset-y-0 end-2.5 flex items-center text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+                      >
+                        {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
+                  </div>
+
+                  {errorMsg && (
+                    <div className="text-xs text-rose-600 dark:text-rose-400 bg-rose-500/10 border border-rose-500/25 rounded-xl p-3 flex items-start gap-2">
+                      <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                      <span>{errorMsg}</span>
+                    </div>
+                  )}
+
+                  <button
+                    type="submit"
+                    disabled={busy}
+                    className="w-full py-2.5 px-4 rounded-xl glass-btn-secondary font-semibold text-sm disabled:opacity-60 cursor-pointer"
+                  >
+                    {busy ? t.common.loading : t.auth.signInAction}
+                  </button>
+
+                  <p className="text-center text-xs text-slate-500 dark:text-slate-400">
+                    {lang === 'ar' ? 'طالب جديد؟' : 'New to Physics Smart?'}{' '}
+                    <button
+                      type="button"
+                      onClick={() => switchAuthTab('signup')}
+                      className="font-semibold text-blue-600 dark:text-cyan-400 hover:underline cursor-pointer"
+                    >
+                      {t.auth.goToSignUp}
+                    </button>
+                  </p>
+                </form>
+              )}
+
+              {/* FORM 2: CREATE NEW ACCOUNT */}
+              {authTab === 'signup' && (
+                <form onSubmit={handleSignUpSubmit} className="space-y-3.5">
                   <div>
                     <label className="block text-xs font-medium mb-1">{t.auth.nameLabel}</label>
                     <input
                       type="text"
                       required
+                      minLength={2}
+                      maxLength={120}
+                      autoComplete="name"
+                      placeholder={lang === 'ar' ? 'مثال: أحمد محمد علي' : 'e.g., Ahmed Mohamed'}
                       value={fullName}
                       onChange={(e) => setFullName(e.target.value)}
                       className="w-full px-3.5 py-2.5 rounded-xl glass-input text-sm"
                     />
                   </div>
-                )}
 
-                <div>
-                  <label className="block text-xs font-medium mb-1">{t.auth.emailLabel}</label>
-                  <input
-                    type="email"
-                    required
-                    dir="ltr"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    className="w-full px-3.5 py-2.5 rounded-xl glass-input text-sm"
-                  />
-                </div>
-
-                {authTab !== 'reset' && (
                   <div>
-                    <label className="block text-xs font-medium mb-1">{t.auth.passwordLabel}</label>
+                    <label className="block text-xs font-medium mb-1">{t.auth.emailLabel}</label>
                     <input
-                      type="password"
+                      type="email"
                       required
-                      minLength={6}
                       dir="ltr"
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
+                      autoComplete="email"
+                      placeholder={t.auth.emailPlaceholder}
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
                       className="w-full px-3.5 py-2.5 rounded-xl glass-input text-sm"
                     />
                   </div>
-                )}
 
-                {errorMsg && (
-                  <p className="text-xs text-rose-500 bg-rose-500/10 border border-rose-500/20 rounded-xl p-2.5">
-                    {errorMsg}
-                  </p>
-                )}
-                {infoMsg && (
-                  <p className="text-xs text-emerald-500 bg-emerald-500/10 border border-emerald-500/20 rounded-xl p-2.5">
-                    {infoMsg}
-                  </p>
-                )}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-medium mb-1">{t.auth.passwordLabel}</label>
+                      <div className="relative">
+                        <input
+                          type={showPassword ? 'text' : 'password'}
+                          required
+                          minLength={6}
+                          dir="ltr"
+                          autoComplete="new-password"
+                          value={password}
+                          onChange={(e) => setPassword(e.target.value)}
+                          className="w-full px-3 py-2.5 pe-9 rounded-xl glass-input text-sm"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowPassword((v) => !v)}
+                          aria-label={showPassword ? 'Hide password' : 'Show password'}
+                          className="absolute inset-y-0 end-2 flex items-center text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+                        >
+                          {showPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                        </button>
+                      </div>
+                    </div>
 
-                <button
-                  type="submit"
-                  disabled={busy}
-                  className="w-full py-2.5 px-4 rounded-xl glass-btn-secondary font-semibold text-sm disabled:opacity-60"
-                >
-                  {authTab === 'signin'
-                    ? t.auth.signInAction
-                    : authTab === 'signup'
-                    ? t.auth.signUpAction
-                    : t.auth.resetAction}
-                </button>
-              </form>
+                    <div>
+                      <label className="block text-xs font-medium mb-1">{t.auth.confirmPasswordLabel}</label>
+                      <div className="relative">
+                        <input
+                          type={showConfirmPassword ? 'text' : 'password'}
+                          required
+                          minLength={6}
+                          dir="ltr"
+                          autoComplete="new-password"
+                          value={confirmPassword}
+                          onChange={(e) => setConfirmPassword(e.target.value)}
+                          className="w-full px-3 py-2.5 pe-9 rounded-xl glass-input text-sm"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowConfirmPassword((v) => !v)}
+                          aria-label={showConfirmPassword ? 'Hide confirm password' : 'Show confirm password'}
+                          className="absolute inset-y-0 end-2 flex items-center text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+                        >
+                          {showConfirmPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-medium mb-1">{t.auth.trackLabel}</label>
+                      <select
+                        value={signupTrack}
+                        onChange={(e) => {
+                          const nextTrack = e.target.value as TrackId;
+                          setSignupTrack(nextTrack);
+                          const def = EDUCATIONAL_TRACKS.find((tr) => tr.id === nextTrack) || EDUCATIONAL_TRACKS[0];
+                          setSignupGrade(def.grades[0].id);
+                        }}
+                        className="w-full px-3 py-2.5 rounded-xl glass-input text-xs font-medium"
+                      >
+                        {EDUCATIONAL_TRACKS.map((tr) => (
+                          <option key={tr.id} value={tr.id}>
+                            {lang === 'ar' ? tr.nameAr : tr.nameEn}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-medium mb-1">{t.auth.gradeLabel}</label>
+                      <select
+                        value={signupGrade}
+                        onChange={(e) => setSignupGrade(e.target.value)}
+                        className="w-full px-3 py-2.5 rounded-xl glass-input text-xs font-medium"
+                      >
+                        {signupTrackDef.grades.map((g) => (
+                          <option key={g.id} value={g.id}>
+                            {lang === 'ar' ? g.labelAr : g.labelEn}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  {errorMsg && (
+                    <div className="text-xs text-rose-600 dark:text-rose-400 bg-rose-500/10 border border-rose-500/25 rounded-xl p-3 space-y-2">
+                      <div className="flex items-start gap-2">
+                        <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                        <span>{errorMsg}</span>
+                      </div>
+                      {suggestSignIn && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPassword('');
+                            setConfirmPassword('');
+                            switchAuthTab('signin');
+                          }}
+                          className="w-full py-1.5 px-3 rounded-lg glass-btn-primary text-xs font-semibold cursor-pointer"
+                        >
+                          {t.auth.goToSignIn}
+                        </button>
+                      )}
+                    </div>
+                  )}
+
+                  <button
+                    type="submit"
+                    disabled={busy}
+                    className="w-full py-2.5 px-4 rounded-xl glass-btn-secondary font-semibold text-sm disabled:opacity-60 cursor-pointer"
+                  >
+                    {busy ? t.common.loading : t.auth.signUpAction}
+                  </button>
+
+                  <p className="text-center text-xs text-slate-500 dark:text-slate-400">
+                    {lang === 'ar' ? 'لديك حساب بالفعل؟' : 'Already have an account?'}{' '}
+                    <button
+                      type="button"
+                      onClick={() => switchAuthTab('signin')}
+                      className="font-semibold text-blue-600 dark:text-cyan-400 hover:underline cursor-pointer"
+                    >
+                      {t.auth.goToSignIn}
+                    </button>
+                  </p>
+                </form>
+              )}
+
+              {/* FORM 3: PASSWORD RESET */}
+              {authTab === 'reset' && (
+                <form onSubmit={handleResetSubmit} className="space-y-4">
+                  <div>
+                    <label className="block text-xs font-medium mb-1">{t.auth.emailLabel}</label>
+                    <input
+                      type="email"
+                      required
+                      dir="ltr"
+                      autoComplete="email"
+                      placeholder={t.auth.emailPlaceholder}
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      className="w-full px-3.5 py-2.5 rounded-xl glass-input text-sm"
+                    />
+                  </div>
+
+                  {errorMsg && (
+                    <div className="text-xs text-rose-600 dark:text-rose-400 bg-rose-500/10 border border-rose-500/25 rounded-xl p-3 flex items-start gap-2">
+                      <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                      <span>{errorMsg}</span>
+                    </div>
+                  )}
+                  {infoMsg && (
+                    <div className="text-xs text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 border border-emerald-500/25 rounded-xl p-3 flex items-start gap-2">
+                      <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
+                      <span>{infoMsg}</span>
+                    </div>
+                  )}
+
+                  <button
+                    type="submit"
+                    disabled={busy}
+                    className="w-full py-2.5 px-4 rounded-xl glass-btn-secondary font-semibold text-sm disabled:opacity-60 cursor-pointer"
+                  >
+                    {busy ? t.common.loading : t.auth.resetAction}
+                  </button>
+
+                  <p className="text-center text-xs text-slate-500 dark:text-slate-400">
+                    <button
+                      type="button"
+                      onClick={() => switchAuthTab('signin')}
+                      className="font-semibold text-blue-600 dark:text-cyan-400 hover:underline cursor-pointer"
+                    >
+                      {t.auth.goToSignIn}
+                    </button>
+                  </p>
+                </form>
+              )}
             </div>
           </div>
         ) : (

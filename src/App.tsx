@@ -15,12 +15,14 @@ import {
 import {
   ADMIN_BOOTSTRAP_EMAIL,
   auth,
+  createUserWithEmailAndPassword,
   db,
   handleFirestoreError,
   OperationType,
   serverTimestamp,
   signOut,
   testFirestoreConnection,
+  updateProfile,
 } from './lib/firebase';
 import {
   ExamAttempt,
@@ -130,6 +132,8 @@ export default function App() {
     root.classList.toggle('dark', theme === 'dark');
   }, [lang, theme]);
 
+  const signupInFlightRef = React.useRef(false);
+
   // Initial Firestore connection test + Auth listener
   useEffect(() => {
     testFirestoreConnection();
@@ -137,6 +141,22 @@ export default function App() {
       setFirebaseUser(user);
       if (!user) {
         setProfile(null);
+        setProgressMap({});
+        setStudyTasks([]);
+        setExamAttempts([]);
+        setTutorSessions([]);
+        setSavedGraphs([]);
+        setAdminStudents([]);
+        setShowTrackSwitcher(false);
+        setSelectedLessonId(null);
+        setTutorLessonContext(null);
+        setActiveSection('dashboard');
+        setAuthReady(true);
+        return;
+      }
+
+      if (signupInFlightRef.current) {
+        // Email sign-up handler creates the Firestore profile atomically with full name, track, and grade
         setAuthReady(true);
         return;
       }
@@ -454,6 +474,63 @@ export default function App() {
     return Array.from(map.values());
   }, [adminLabs]);
 
+  // Email/Password Registration with Atomic Firestore Profile Creation
+  const handleEmailSignUp = async (input: {
+    fullName: string;
+    email: string;
+    password: string;
+    track: TrackId;
+    grade: string;
+  }) => {
+    const cleanEmail = input.email.trim();
+    const cleanName = input.fullName.trim();
+    signupInFlightRef.current = true;
+    try {
+      const cred = await createUserWithEmailAndPassword(auth, cleanEmail, input.password);
+      await updateProfile(cred.user, { displayName: cleanName }).catch(() => {});
+
+      const userRef = doc(db, 'users', cred.user.uid);
+      const isBootstrapAdmin = cred.user.email === ADMIN_BOOTSTRAP_EMAIL && cred.user.emailVerified;
+      const newProfile: UserProfile = {
+        uid: cred.user.uid,
+        displayName: cleanName,
+        email: cred.user.email || cleanEmail,
+        photoURL: cred.user.photoURL || '',
+        track: input.track,
+        grade: input.grade,
+        preferredLang: lang,
+        role: isBootstrapAdmin ? 'admin' : 'student',
+        points: 0,
+        level: 1,
+        badges: [],
+      };
+
+      try {
+        const existingSnap = await getDoc(userRef);
+        if (existingSnap.exists()) {
+          const existingData = existingSnap.data() as UserProfile;
+          setProfile({
+            ...existingData,
+            role: isBootstrapAdmin ? 'admin' : existingData.role,
+          });
+        } else {
+          await setDoc(userRef, {
+            ...newProfile,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+          setProfile(newProfile);
+        }
+      } catch (err) {
+        handleFirestoreError(err, OperationType.CREATE, `users/${cred.user.uid}`);
+      }
+
+      setActiveSection('dashboard');
+    } finally {
+      signupInFlightRef.current = false;
+    }
+  };
+
   // Mutations with mandatory handleFirestoreError
   const handleSaveTrackSelection = async (track: TrackId, grade: string, displayName?: string) => {
     if (!firebaseUser) return;
@@ -469,7 +546,31 @@ export default function App() {
       updatePayload.displayName = trimmedName;
     }
     try {
-      await updateDoc(ref, updatePayload);
+      const snap = await getDoc(ref);
+      if (snap.exists()) {
+        await updateDoc(ref, updatePayload);
+      } else {
+        const isBootstrapAdmin = firebaseUser.email === ADMIN_BOOTSTRAP_EMAIL && firebaseUser.emailVerified;
+        const createdProfile: UserProfile = {
+          uid: firebaseUser.uid,
+          displayName: trimmedName || firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'Student',
+          email: firebaseUser.email || '',
+          photoURL: firebaseUser.photoURL || '',
+          track,
+          grade,
+          preferredLang: lang,
+          role: isBootstrapAdmin ? 'admin' : 'student',
+          points: 0,
+          level: 1,
+          badges: [],
+        };
+        await setDoc(ref, {
+          ...createdProfile,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+        setProfile(createdProfile);
+      }
       setShowTrackSwitcher(false);
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `users/${firebaseUser.uid}`);
@@ -800,6 +901,7 @@ export default function App() {
         onToggleTheme={() => setTheme((th) => (th === 'dark' ? 'light' : 'dark'))}
         firebaseUser={firebaseUser}
         userProfile={profile}
+        onRegisterWithEmail={handleEmailSignUp}
         onSaveTrackSelection={handleSaveTrackSelection}
         onCancelSwitch={profile && profile.track !== 'unset' ? () => setShowTrackSwitcher(false) : undefined}
       />

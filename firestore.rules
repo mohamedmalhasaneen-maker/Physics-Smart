@@ -16,6 +16,10 @@ service cloud.firestore {
       return isSignedIn() && request.auth.token.email_verified == true;
     }
 
+    function isAuthenticatedUser() {
+      return isSignedIn() && request.auth.token.firebase.sign_in_provider != 'anonymous';
+    }
+
     function isOwner(userId) {
       return isSignedIn() && request.auth.uid == userId;
     }
@@ -263,7 +267,7 @@ service cloud.firestore {
     match /users/{userId} {
       allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
       allow list: if isAdmin();
-      allow create: if isValidId(userId) && isVerified() && isValidUserProfile(incoming()) && (
+      allow create: if isValidId(userId) && isAuthenticatedUser() && isValidUserProfile(incoming()) && (
         isAdmin() || (
           isOwner(userId) &&
           incoming().uid == request.auth.uid &&
@@ -274,7 +278,7 @@ service cloud.firestore {
           incoming().updatedAt == request.time
         )
       );
-      allow update: if isValidId(userId) && isVerified() && isValidUserProfile(incoming()) && (
+      allow update: if isValidId(userId) && isAuthenticatedUser() && isValidUserProfile(incoming()) && (
         isAdmin() || (
           isOwner(userId) &&
           incoming().uid == existing().uid &&
@@ -295,12 +299,12 @@ service cloud.firestore {
       match /progress/{lessonId} {
         allow get: if isValidId(userId) && isValidId(lessonId) && (isOwner(userId) || isAdmin());
         allow list: if isValidId(userId) && (isOwner(userId) || isAdmin()) && resource.data.userId == userId;
-        allow create: if isValidId(userId) && isValidId(lessonId) && isVerified() &&
+        allow create: if isValidId(userId) && isValidId(lessonId) && isAuthenticatedUser() &&
           isValidLessonProgress(incoming(), userId) &&
           incoming().updatedAt == request.time &&
           exists(/databases/$(database)/documents/users/$(userId)) &&
           (isOwner(userId) || isAdmin());
-        allow update: if isValidId(userId) && isValidId(lessonId) && isVerified() &&
+        allow update: if isValidId(userId) && isValidId(lessonId) && isAuthenticatedUser() &&
           isValidLessonProgress(incoming(), userId) &&
           incoming().userId == existing().userId &&
           incoming().lessonId == existing().lessonId &&
@@ -320,13 +324,13 @@ service cloud.firestore {
       match /studyTasks/{taskId} {
         allow get: if isValidId(userId) && isValidId(taskId) && (isOwner(userId) || isAdmin());
         allow list: if isValidId(userId) && (isOwner(userId) || isAdmin()) && resource.data.userId == userId;
-        allow create: if isValidId(userId) && isValidId(taskId) && isVerified() &&
+        allow create: if isValidId(userId) && isValidId(taskId) && isAuthenticatedUser() &&
           isValidStudyTask(incoming(), userId) &&
           incoming().createdAt == request.time &&
           incoming().updatedAt == request.time &&
           exists(/databases/$(database)/documents/users/$(userId)) &&
           (isOwner(userId) || isAdmin());
-        allow update: if isValidId(userId) && isValidId(taskId) && isVerified() &&
+        allow update: if isValidId(userId) && isValidId(taskId) && isAuthenticatedUser() &&
           isValidStudyTask(incoming(), userId) &&
           incoming().userId == existing().userId &&
           incoming().createdAt == existing().createdAt &&
@@ -346,13 +350,13 @@ service cloud.firestore {
       match /examAttempts/{attemptId} {
         allow get: if isValidId(userId) && isValidId(attemptId) && (isOwner(userId) || isAdmin());
         allow list: if isValidId(userId) && (isOwner(userId) || isAdmin()) && resource.data.userId == userId;
-        allow create: if isValidId(userId) && isValidId(attemptId) && isVerified() &&
+        allow create: if isValidId(userId) && isValidId(attemptId) && isAuthenticatedUser() &&
           isValidExamAttempt(incoming(), userId) &&
           incoming().startedAt == request.time &&
           incoming().updatedAt == request.time &&
           exists(/databases/$(database)/documents/users/$(userId)) &&
           (isOwner(userId) || isAdmin());
-        allow update: if isValidId(userId) && isValidId(attemptId) && isVerified() &&
+        allow update: if isValidId(userId) && isValidId(attemptId) && isAuthenticatedUser() &&
           isValidExamAttempt(incoming(), userId) &&
           incoming().userId == existing().userId &&
           incoming().startedAt == existing().startedAt &&
@@ -373,13 +377,13 @@ service cloud.firestore {
       match /tutorSessions/{sessionId} {
         allow get: if isValidId(userId) && isValidId(sessionId) && (isOwner(userId) || isAdmin());
         allow list: if isValidId(userId) && (isOwner(userId) || isAdmin()) && resource.data.userId == userId;
-        allow create: if isValidId(userId) && isValidId(sessionId) && isVerified() &&
+        allow create: if isValidId(userId) && isValidId(sessionId) && isAuthenticatedUser() &&
           isValidTutorSession(incoming(), userId) &&
           incoming().createdAt == request.time &&
           incoming().updatedAt == request.time &&
           exists(/databases/$(database)/documents/users/$(userId)) &&
           (isOwner(userId) || isAdmin());
-        allow update: if isValidId(userId) && isValidId(sessionId) && isVerified() &&
+        allow update: if isValidId(userId) && isValidId(sessionId) && isAuthenticatedUser() &&
           isValidTutorSession(incoming(), userId) &&
           incoming().userId == existing().userId &&
           incoming().createdAt == existing().createdAt &&
@@ -397,13 +401,13 @@ service cloud.firestore {
       match /graphs/{graphId} {
         allow get: if isValidId(userId) && isValidId(graphId) && (isOwner(userId) || isAdmin());
         allow list: if isValidId(userId) && (isOwner(userId) || isAdmin()) && resource.data.userId == userId;
-        allow create: if isValidId(userId) && isValidId(graphId) && isVerified() &&
+        allow create: if isValidId(userId) && isValidId(graphId) && isAuthenticatedUser() &&
           isValidSavedGraph(incoming(), userId) &&
           incoming().createdAt == request.time &&
           incoming().updatedAt == request.time &&
           exists(/databases/$(database)/documents/users/$(userId)) &&
           (isOwner(userId) || isAdmin());
-        allow update: if isValidId(userId) && isValidId(graphId) && isVerified() &&
+        allow update: if isValidId(userId) && isValidId(graphId) && isAuthenticatedUser() &&
           isValidSavedGraph(incoming(), userId) &&
           incoming().userId == existing().userId &&
           incoming().createdAt == existing().createdAt &&
@@ -422,11 +426,11 @@ service cloud.firestore {
     match /leaderboardPublic/{userId} {
       allow get: if isValidId(userId) && isSignedIn();
       allow list: if isSignedIn() && resource.data.points >= 0;
-      allow create: if isValidId(userId) && isVerified() &&
+      allow create: if isValidId(userId) && isAuthenticatedUser() &&
         isValidLeaderboardEntry(incoming(), userId) &&
         incoming().updatedAt == request.time &&
         (isOwner(userId) || isAdmin());
-      allow update: if isValidId(userId) && isVerified() &&
+      allow update: if isValidId(userId) && isAuthenticatedUser() &&
         isValidLeaderboardEntry(incoming(), userId) &&
         incoming().uid == existing().uid &&
         incoming().updatedAt == request.time && (
