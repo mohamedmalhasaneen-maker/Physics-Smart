@@ -1,0 +1,10 @@
+{
+  "name": "Physics Smart | منصة الفيزياء الذكية",
+  "description": "منصة تعليمية تفاعلية متكاملة للفيزياء لطلاب الثانوية العامة المصرية والبكالوريا المصرية والدبلومة الأمريكية — دروس تفصيلية، معمل افتراضي، مدرس ذكي، وحل مسائل.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

@@ -1,0 +1,442 @@
+import React from 'react';
+import {
+  ExamAttempt,
+  Language,
+  Lesson,
+  LessonProgress,
+  NavSection,
+  StudyTask,
+  UserProfile,
+} from '../types/physics';
+import { getGradeLabel, getTrackById } from '../data/tracks';
+import {
+  ArrowLeft,
+  ArrowRight,
+  Bell,
+  BookOpen,
+  Bot,
+  Calculator,
+  CalendarClock,
+  CheckCircle2,
+  FlaskConical,
+  LineChart,
+  Play,
+  Sparkles,
+  Target,
+  Trophy,
+} from 'lucide-react';
+
+interface DashboardViewProps {
+  lang: Language;
+  profile: UserProfile;
+  lessons: Lesson[];
+  progressMap: Record<string, LessonProgress>;
+  examAttempts: ExamAttempt[];
+  studyTasks: StudyTask[];
+  announcements: Array<{ id: string; titleAr: string; titleEn: string; bodyAr: string; bodyEn: string }>;
+  onNavigate: (section: NavSection) => void;
+  onOpenLesson: (lessonId: string) => void;
+  onToggleTask: (task: StudyTask) => void;
+}
+
+export function DashboardView({
+  lang,
+  profile,
+  lessons,
+  progressMap,
+  examAttempts,
+  studyTasks,
+  announcements,
+  onNavigate,
+  onOpenLesson,
+  onToggleTask,
+}: DashboardViewProps) {
+  const trackInfo = getTrackById(profile.track);
+  const gradeLabel = getGradeLabel(profile.track, profile.grade, lang);
+
+  // Strict track + grade filtered lessons
+  const scopedLessons = lessons.filter((l) => l.track === profile.track && l.grade === profile.grade);
+  const completedLessons = scopedLessons.filter((l) => progressMap[l.id]?.isCompleted);
+  const completionPct =
+    scopedLessons.length > 0 ? Math.round((completedLessons.length / scopedLessons.length) * 100) : 0;
+
+  // Last studied lesson
+  const sortedProgress = Object.values(progressMap)
+    .filter((p) => scopedLessons.some((l) => l.id === p.lessonId))
+    .sort((a, b) => {
+      const ta = a.updatedAt?.seconds || 0;
+      const tb = b.updatedAt?.seconds || 0;
+      return tb - ta;
+    });
+  const lastLessonId = sortedProgress[0]?.lessonId || scopedLessons[0]?.id;
+  const lastLesson = scopedLessons.find((l) => l.id === lastLessonId) || scopedLessons[0];
+
+  const submittedAttempts = examAttempts.filter((a) => a.status === 'submitted');
+  const latestAttempt = submittedAttempts[0];
+
+  // Strengths & weaknesses derived from real quiz/exam data
+  const weakLessons = scopedLessons.filter(
+    (l) => progressMap[l.id] && progressMap[l.id].quizScore > 0 && progressMap[l.id].quizScore < 70
+  );
+  const strongLessons = scopedLessons.filter(
+    (l) => progressMap[l.id] && progressMap[l.id].quizScore >= 80
+  );
+  const nextSuggested = scopedLessons.filter((l) => !progressMap[l.id]?.isCompleted).slice(0, 3);
+
+  const todayTasks = studyTasks.filter((t) => !t.completed).slice(0, 4);
+  const DirArrow = lang === 'ar' ? ArrowLeft : ArrowRight;
+
+  const shortcuts: Array<{ id: NavSection; labelAr: string; labelEn: string; icon: React.ReactNode }> = [
+    { id: 'curriculum', labelAr: 'المناهج والدروس', labelEn: 'Curriculum', icon: <BookOpen className="w-4 h-4" /> },
+    { id: 'tutor', labelAr: 'المدرس الذكي', labelEn: 'AI Tutor', icon: <Bot className="w-4 h-4" /> },
+    { id: 'solver', labelAr: 'حل المسائل', labelEn: 'Problem Solver', icon: <Calculator className="w-4 h-4" /> },
+    { id: 'lab', labelAr: 'المعمل الافتراضي', labelEn: 'Virtual Lab', icon: <FlaskConical className="w-4 h-4" /> },
+    { id: 'exams', labelAr: 'الامتحانات', labelEn: 'Exams', icon: <Target className="w-4 h-4" /> },
+    { id: 'graphing', labelAr: 'الرسم البياني', labelEn: 'Graphing', icon: <LineChart className="w-4 h-4" /> },
+    { id: 'challenges', labelAr: 'التحديات', labelEn: 'Challenges', icon: <Trophy className="w-4 h-4" /> },
+    { id: 'planner', labelAr: 'خطة المذاكرة', labelEn: 'Planner', icon: <CalendarClock className="w-4 h-4" /> },
+  ];
+
+  return (
+    <div className="space-y-6">
+      {/* Welcome Banner + Resume Learning */}
+      <section className="rounded-2xl glass-card p-6 sm:p-8 flex flex-col lg:flex-row lg:items-center justify-between gap-6">
+        <div className="space-y-2 max-w-2xl">
+          <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600 dark:text-slate-300">
+            <span className="font-semibold text-blue-600 dark:text-cyan-400">
+              {lang === 'ar' ? trackInfo?.nameAr : trackInfo?.nameEn}
+            </span>
+            <span aria-hidden="true">·</span>
+            <span>{gradeLabel}</span>
+            <span aria-hidden="true">·</span>
+            <span className="font-mono-num">
+              {lang === 'ar' ? `المستوى ${profile.level}` : `Level ${profile.level}`} ({profile.points} pts)
+            </span>
+          </div>
+
+          <h1 className="text-2xl sm:text-3xl font-bold text-slate-900 dark:text-white text-balance">
+            {lang === 'ar'
+              ? `مرحبًا، ${profile.displayName}`
+              : `Welcome back, ${profile.displayName}`}
+          </h1>
+
+          <p className="text-sm text-slate-600 dark:text-slate-300">
+            {lastLesson
+              ? lang === 'ar'
+                ? `آخر درس تمت دراسته: ${lastLesson.titleAr}`
+                : `Last studied lesson: ${lastLesson.titleEn}`
+              : lang === 'ar'
+              ? 'ابدأ بأول درس في منهجك الدراسي الآن.'
+              : 'Start your first physics lesson in this curriculum track.'}
+          </p>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3 shrink-0">
+          {lastLesson && (
+            <button
+              onClick={() => onOpenLesson(lastLesson.id)}
+              className="px-5 py-3 rounded-xl glass-btn-primary text-sm font-semibold flex items-center gap-2 whitespace-nowrap"
+            >
+              <Play className="w-4 h-4" />
+              <span>{lang === 'ar' ? 'استكمال المذاكرة' : 'Continue Studying'}</span>
+            </button>
+          )}
+          <button
+            onClick={() => onNavigate('tutor')}
+            className="px-4 py-3 rounded-xl glass-btn-secondary text-sm font-medium flex items-center gap-2 whitespace-nowrap"
+          >
+            <Bot className="w-4 h-4 text-blue-600 dark:text-cyan-400" />
+            <span>{lang === 'ar' ? 'اسأل المدرس الذكي' : 'Ask AI Tutor'}</span>
+          </button>
+        </div>
+      </section>
+
+      {/* 4-column KPI strip */}
+      <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="rounded-2xl glass-card p-5">
+          <p className="text-xs text-slate-600 dark:text-slate-400">
+            {lang === 'ar' ? 'نسبة إنجاز المنهج' : 'Curriculum Completion'}
+          </p>
+          <p className="text-2xl font-bold font-mono-num mt-1">{completionPct}%</p>
+          <div className="mt-3 h-2 w-full rounded-full bg-slate-200/70 dark:bg-white/10 overflow-hidden">
+            <div className="h-full bg-gradient-to-r from-blue-500 to-cyan-400 transition-all" style={{ width: `${completionPct}%` }} />
+          </div>
+          <p className="text-xs text-slate-500 dark:text-slate-400 mt-2 font-mono-num">
+            {completedLessons.length} / {scopedLessons.length}{' '}
+            {lang === 'ar' ? 'دروس مكتملة' : 'lessons completed'}
+          </p>
+        </div>
+
+        <div className="rounded-2xl glass-card p-5">
+          <p className="text-xs text-slate-600 dark:text-slate-400">
+            {lang === 'ar' ? 'آخر نتيجة اختبار' : 'Latest Exam Score'}
+          </p>
+          <p className="text-2xl font-bold font-mono-num mt-1">
+            {latestAttempt ? `${latestAttempt.score}/${latestAttempt.maxScore}` : '—'}
+          </p>
+          <p className="text-xs text-slate-500 dark:text-slate-400 mt-2 truncate">
+            {latestAttempt
+              ? latestAttempt.examTitle
+              : lang === 'ar'
+              ? 'لم تؤدِّ اختبارات بعد'
+              : 'No exams submitted yet'}
+          </p>
+        </div>
+
+        <div className="rounded-2xl glass-card p-5">
+          <p className="text-xs text-slate-600 dark:text-slate-400">
+            {lang === 'ar' ? 'المهام اليومية المتبقية' : 'Pending Daily Tasks'}
+          </p>
+          <p className="text-2xl font-bold font-mono-num mt-1">{todayTasks.length}</p>
+          <button
+            onClick={() => onNavigate('planner')}
+            className="mt-2 text-xs font-medium text-blue-600 dark:text-cyan-400 hover:underline flex items-center gap-1"
+          >
+            <span>{lang === 'ar' ? 'فتح خطة المذاكرة' : 'Open Study Planner'}</span>
+            <DirArrow className="w-3 h-3" />
+          </button>
+        </div>
+
+        <div className="rounded-2xl glass-card p-5">
+          <p className="text-xs text-slate-600 dark:text-slate-400">
+            {lang === 'ar' ? 'نقاط الإنجاز والترتيب' : 'Achievement Points'}
+          </p>
+          <p className="text-2xl font-bold font-mono-num mt-1">{profile.points}</p>
+          <button
+            onClick={() => onNavigate('challenges')}
+            className="mt-2 text-xs font-medium text-blue-600 dark:text-cyan-400 hover:underline flex items-center gap-1"
+          >
+            <span>{lang === 'ar' ? 'سؤال اليوم والتحديات' : 'Daily Challenge'}</span>
+            <DirArrow className="w-3 h-3" />
+          </button>
+        </div>
+      </section>
+
+      {/* Quick Shortcuts Strip */}
+      <section className="rounded-2xl glass-card p-5">
+        <h2 className="text-sm font-semibold mb-4 text-slate-700 dark:text-slate-200">
+          {lang === 'ar' ? 'اختصارات سريعة للأقسام' : 'Quick Module Shortcuts'}
+        </h2>
+        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
+          {shortcuts.map((sc, idx) => {
+            const iconVariants = [
+              'glass-icon-blue',
+              'glass-icon-cyan',
+              'glass-icon-violet',
+              'glass-icon-emerald',
+              'glass-icon-amber',
+              'glass-icon-cyan',
+              'glass-icon-amber',
+              'glass-icon-blue',
+            ];
+            return (
+              <button
+                key={sc.id}
+                onClick={() => onNavigate(sc.id)}
+                className="p-3.5 rounded-2xl glass-card-interactive flex flex-col items-center text-center gap-2.5"
+              >
+                <span className={`glass-icon ${iconVariants[idx % iconVariants.length]} w-9 h-9`}>
+                  {sc.icon}
+                </span>
+                <span className="text-xs font-medium leading-tight">
+                  {lang === 'ar' ? sc.labelAr : sc.labelEn}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </section>
+
+      {/* Main 2-Column Grid: Tasks & Suggested Lessons | Strengths/Weaknesses & Notifications */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        {/* Left: Suggested Lessons & Study Schedule */}
+        <div className="lg:col-span-7 space-y-6">
+          <div className="rounded-2xl glass-card p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-base font-bold flex items-center gap-2.5">
+                <span className="glass-icon glass-icon-blue w-8 h-8">
+                  <Sparkles className="w-4 h-4" />
+                </span>
+                {lang === 'ar' ? 'الدروس المقترحة لمسارك' : 'Recommended Lessons for Your Track'}
+              </h2>
+              <button
+                onClick={() => onNavigate('curriculum')}
+                className="text-xs font-medium text-blue-600 dark:text-cyan-400 hover:underline"
+              >
+                {lang === 'ar' ? 'عرض الكل' : 'View All'}
+              </button>
+            </div>
+            {nextSuggested.length > 0 ? (
+              <div className="divide-y divide-slate-200/70 dark:divide-white/10">
+                {nextSuggested.map((lesson) => (
+                  <div key={lesson.id} className="py-3.5 flex items-center justify-between gap-4">
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold truncate">
+                        {lang === 'ar' ? lesson.titleAr : lesson.titleEn}
+                      </p>
+                      <p className="text-xs text-slate-500 dark:text-slate-400 truncate mt-0.5">
+                        {lang === 'ar' ? lesson.unitTitleAr : lesson.unitTitleEn} ·{' '}
+                        <span className="font-mono-num">{lesson.estimatedMinutes}</span>{' '}
+                        {lang === 'ar' ? 'دقيقة' : 'min'}
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => onOpenLesson(lesson.id)}
+                      className="px-3.5 py-1.5 rounded-xl glass-btn-secondary hover:!border-cyan-400/50 text-xs font-medium whitespace-nowrap shrink-0"
+                    >
+                      {lang === 'ar' ? 'ابدأ الدرس' : 'Open Lesson'}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-slate-500">
+                {lang === 'ar'
+                  ? 'أتممت جميع الدروس المتاحة حاليًا لهذا الصف! راجع بنك الأسئلة أو الامتحانات.'
+                  : 'All current lessons for this grade are completed! Try the Question Bank or Exams.'}
+              </p>
+            )}
+          </div>
+
+          {/* Daily Tasks & Schedule */}
+          <div className="rounded-2xl glass-card p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-base font-bold">
+                {lang === 'ar' ? 'جدول المذاكرة والمهام اليومية' : 'Study Schedule & Daily Tasks'}
+              </h2>
+              <button
+                onClick={() => onNavigate('planner')}
+                className="text-xs font-medium text-blue-600 dark:text-cyan-400 hover:underline"
+              >
+                {lang === 'ar' ? 'إدارة الخطة' : 'Manage'}
+              </button>
+            </div>
+            {todayTasks.length > 0 ? (
+              <div className="space-y-2.5">
+                {todayTasks.map((task) => (
+                  <label
+                    key={task.id}
+                    className="flex items-center justify-between gap-3 p-3 rounded-xl glass-subcard hover:border-cyan-400/40 cursor-pointer"
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <input
+                        type="checkbox"
+                        checked={task.completed}
+                        onChange={() => onToggleTask(task)}
+                        className="w-4 h-4 rounded accent-blue-600"
+                      />
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium truncate">{task.title}</p>
+                        <p className="text-xs text-slate-500 dark:text-slate-400 font-mono-num">
+                          {task.scheduledDate} · {task.durationMinutes} {lang === 'ar' ? 'د' : 'min'}
+                        </p>
+                      </div>
+                    </div>
+                  </label>
+                ))}
+              </div>
+            ) : (
+              <div className="text-sm text-slate-500 flex items-center justify-between gap-3">
+                <span>
+                  {lang === 'ar' ? 'لا توجد مهام مجدولة لليوم.' : 'No tasks scheduled for today.'}
+                </span>
+                <button
+                  onClick={() => onNavigate('planner')}
+                  className="px-3.5 py-1.5 rounded-xl glass-btn-primary text-xs font-medium whitespace-nowrap"
+                >
+                  {lang === 'ar' ? 'أنشئ خطة ذكية' : 'Create Smart Plan'}
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Right: Strengths/Weaknesses, Recent Activity, Notifications */}
+        <div className="lg:col-span-5 space-y-6">
+          <div className="rounded-2xl glass-card p-6 space-y-4">
+            <h2 className="text-base font-bold">
+              {lang === 'ar' ? 'نقاط القوة والضعف' : 'Strengths & Focus Areas'}
+            </h2>
+            <div>
+              <p className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 mb-1.5">
+                {lang === 'ar' ? 'نقاط القوة (إتقان ≥ 80%)' : 'Strengths (Mastery ≥ 80%)'}
+              </p>
+              {strongLessons.length > 0 ? (
+                <ul className="space-y-1 text-sm">
+                  {strongLessons.map((l) => (
+                    <li key={l.id} className="flex items-center gap-2">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
+                      <span className="truncate">{lang === 'ar' ? l.titleAr : l.titleEn}</span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  {lang === 'ar' ? 'ستظهر هنا الدروس التي تحرز فيها ≥ 80%.' : 'Lessons where you score ≥ 80% appear here.'}
+                </p>
+              )}
+            </div>
+
+            <div className="pt-3 border-t border-slate-200/70 dark:border-white/10">
+              <p className="text-xs font-semibold text-amber-600 dark:text-amber-400 mb-1.5">
+                {lang === 'ar' ? 'موضوعات تحتاج مراجعة (< 70%)' : 'Needs Review (< 70%)'}
+              </p>
+              {weakLessons.length > 0 ? (
+                <ul className="space-y-1.5 text-sm">
+                  {weakLessons.map((l) => (
+                    <li key={l.id} className="flex items-center justify-between gap-2">
+                      <span className="truncate">{lang === 'ar' ? l.titleAr : l.titleEn}</span>
+                      <button
+                        onClick={() => onOpenLesson(l.id)}
+                        className="text-xs text-blue-600 dark:text-cyan-400 hover:underline shrink-0"
+                      >
+                        {lang === 'ar' ? 'مراجعة' : 'Review'}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  {lang === 'ar' ? 'لا توجد نقاط ضعف مسجلة حاليًا.' : 'No weak areas flagged yet.'}
+                </p>
+              )}
+            </div>
+          </div>
+
+          {/* Notifications & Recent Activity */}
+          <div className="rounded-2xl glass-card p-6 space-y-4">
+            <h2 className="text-base font-bold flex items-center gap-2.5">
+              <span className="glass-icon glass-icon-violet w-8 h-8">
+                <Bell className="w-4 h-4" />
+              </span>
+              {lang === 'ar' ? 'الإشعارات وآخر النشاطات' : 'Notifications & Recent Activity'}
+            </h2>
+            <div className="space-y-3 text-xs">
+              {announcements.map((ann) => (
+                <div key={ann.id} className="p-3.5 rounded-xl glass-subcard">
+                  <p className="font-semibold text-slate-900 dark:text-white">
+                    {lang === 'ar' ? ann.titleAr : ann.titleEn}
+                  </p>
+                  <p className="text-slate-600 dark:text-slate-300 mt-1">
+                    {lang === 'ar' ? ann.bodyAr : ann.bodyEn}
+                  </p>
+                </div>
+              ))}
+
+              {submittedAttempts.slice(0, 3).map((att) => (
+                <div key={att.id} className="flex items-center justify-between text-slate-600 dark:text-slate-300 py-1">
+                  <span className="truncate">
+                    {lang === 'ar' ? `أنهيت امتحان: ${att.examTitle}` : `Completed exam: ${att.examTitle}`}
+                  </span>
+                  <span className="font-mono-num font-semibold text-blue-600 dark:text-cyan-400 shrink-0">
+                    {att.score}/{att.maxScore}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

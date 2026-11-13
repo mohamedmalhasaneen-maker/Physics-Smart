@@ -1,0 +1,488 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global safety net: default deny everything
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Hardened Global Primitives ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isAdmin() {
+      return isVerified() && (
+        request.auth.token.email == 'mohamed.m.alhasaneen@gmail.com' ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isValidTrack(t) {
+      return t in ['thanawiya', 'baccalaureate', 'american'];
+    }
+
+    function isValidUserTrack(t) {
+      return t in ['thanawiya', 'baccalaureate', 'american', 'unset'];
+    }
+
+    // --- Validation Blueprints ---
+    function isValidAdminUser(data) {
+      return data.keys().hasAll(['uid', 'email', 'grantedAt']) &&
+        data.keys().hasOnly(['uid', 'email', 'grantedAt']) &&
+        isValidId(data.uid) &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 200 &&
+        data.grantedAt is timestamp;
+    }
+
+    function isValidUserProfile(data) {
+      return data.keys().hasAll([
+          'uid', 'displayName', 'email', 'track', 'grade',
+          'preferredLang', 'role', 'points', 'level', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'uid', 'displayName', 'email', 'photoURL', 'track', 'grade',
+          'preferredLang', 'role', 'points', 'level', 'badges', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.uid) &&
+        data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 120 &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 200 &&
+        (!('photoURL' in data) || (data.photoURL is string && data.photoURL.size() <= 500)) &&
+        isValidUserTrack(data.track) &&
+        data.grade is string && data.grade.size() <= 64 &&
+        data.preferredLang in ['ar', 'en'] &&
+        data.role in ['student', 'admin'] &&
+        data.points is number && data.points >= 0 && data.points <= 10000000 &&
+        data.level is number && data.level >= 1 && data.level <= 500 &&
+        (!('badges' in data) || (data.badges is list && data.badges.size() <= 30 && (data.badges.size() == 0 || data.badges[0] is string))) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidLessonProgress(data, userId) {
+      return data.keys().hasAll([
+          'userId', 'lessonId', 'track', 'isCompleted', 'quizScore', 'studyMinutes', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'userId', 'lessonId', 'track', 'completedParts', 'isCompleted',
+          'quizScore', 'studyMinutes', 'lastAccessedAt', 'updatedAt'
+        ]) &&
+        data.userId == userId &&
+        isValidId(data.lessonId) &&
+        isValidTrack(data.track) &&
+        (!('completedParts' in data) || (data.completedParts is list && data.completedParts.size() <= 30)) &&
+        data.isCompleted is bool &&
+        data.quizScore is number && data.quizScore >= 0 && data.quizScore <= 100 &&
+        data.studyMinutes is number && data.studyMinutes >= 0 && data.studyMinutes <= 100000 &&
+        (!('lastAccessedAt' in data) || data.lastAccessedAt is timestamp) &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidStudyTask(data, userId) {
+      return data.keys().hasAll([
+          'id', 'userId', 'title', 'track', 'scheduledDate',
+          'durationMinutes', 'taskType', 'completed', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'userId', 'title', 'track', 'lessonId', 'scheduledDate',
+          'durationMinutes', 'taskType', 'completed', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.id) &&
+        data.userId == userId &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 200 &&
+        isValidTrack(data.track) &&
+        (!('lessonId' in data) || (data.lessonId is string && data.lessonId.size() <= 128)) &&
+        data.scheduledDate is string && data.scheduledDate.size() >= 4 && data.scheduledDate.size() <= 32 &&
+        data.durationMinutes is number && data.durationMinutes >= 5 && data.durationMinutes <= 600 &&
+        data.taskType in ['study', 'practice', 'review', 'exam'] &&
+        data.completed is bool &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidExamAttempt(data, userId) {
+      return data.keys().hasAll([
+          'id', 'userId', 'examId', 'examTitle', 'track', 'status',
+          'score', 'maxScore', 'startedAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'userId', 'examId', 'examTitle', 'track', 'status',
+          'score', 'maxScore', 'answersJson', 'startedAt', 'updatedAt'
+        ]) &&
+        isValidId(data.id) &&
+        data.userId == userId &&
+        data.examId is string && data.examId.size() >= 1 && data.examId.size() <= 128 &&
+        data.examTitle is string && data.examTitle.size() >= 1 && data.examTitle.size() <= 200 &&
+        isValidTrack(data.track) &&
+        data.status in ['in_progress', 'submitted'] &&
+        data.score is number && data.score >= 0 && data.score <= 10000 &&
+        data.maxScore is number && data.maxScore >= 1 && data.maxScore <= 10000 &&
+        (!('answersJson' in data) || (data.answersJson is string && data.answersJson.size() <= 20000)) &&
+        data.startedAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidTutorSession(data, userId) {
+      return data.keys().hasAll([
+          'id', 'userId', 'title', 'mode', 'track', 'messagesJson', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'userId', 'title', 'mode', 'track', 'messagesJson', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.id) &&
+        data.userId == userId &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 200 &&
+        data.mode in ['tutor', 'analyzer', 'examiner'] &&
+        isValidTrack(data.track) &&
+        data.messagesJson is string && data.messagesJson.size() <= 50000 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidSavedGraph(data, userId) {
+      return data.keys().hasAll([
+          'id', 'userId', 'title', 'graphType', 'pointsJson', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'userId', 'title', 'graphType', 'xLabel', 'yLabel', 'pointsJson', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.id) &&
+        data.userId == userId &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 200 &&
+        data.graphType is string && data.graphType.size() >= 1 && data.graphType.size() <= 64 &&
+        (!('xLabel' in data) || (data.xLabel is string && data.xLabel.size() <= 64)) &&
+        (!('yLabel' in data) || (data.yLabel is string && data.yLabel.size() <= 64)) &&
+        data.pointsJson is string && data.pointsJson.size() <= 20000 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidLeaderboardEntry(data, userId) {
+      return data.keys().hasAll([
+          'uid', 'displayName', 'track', 'grade', 'points', 'accuracy', 'level', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'uid', 'displayName', 'track', 'grade', 'points', 'accuracy', 'level', 'updatedAt'
+        ]) &&
+        data.uid == userId &&
+        isValidId(data.uid) &&
+        data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 120 &&
+        isValidTrack(data.track) &&
+        data.grade is string && data.grade.size() <= 64 &&
+        data.points is number && data.points >= 0 && data.points <= 10000000 &&
+        data.accuracy is number && data.accuracy >= 0 && data.accuracy <= 100 &&
+        data.level is number && data.level >= 1 && data.level <= 500 &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidCurriculumLesson(data) {
+      return data.keys().hasAll(['id', 'track', 'grade', 'titleAr', 'titleEn', 'payloadJson', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'track', 'grade', 'titleAr', 'titleEn', 'payloadJson', 'updatedAt']) &&
+        isValidId(data.id) &&
+        isValidTrack(data.track) &&
+        data.grade is string && data.grade.size() <= 64 &&
+        data.titleAr is string && data.titleAr.size() <= 300 &&
+        data.titleEn is string && data.titleEn.size() <= 300 &&
+        data.payloadJson is string && data.payloadJson.size() <= 200000 &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidQuestionItem(data) {
+      return data.keys().hasAll(['id', 'track', 'grade', 'difficulty', 'payloadJson', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'track', 'grade', 'difficulty', 'payloadJson', 'updatedAt']) &&
+        isValidId(data.id) &&
+        isValidTrack(data.track) &&
+        data.grade is string && data.grade.size() <= 64 &&
+        data.difficulty in ['easy', 'medium', 'hard', 'advanced'] &&
+        data.payloadJson is string && data.payloadJson.size() <= 50000 &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidExamBlueprint(data) {
+      return data.keys().hasAll(['id', 'track', 'grade', 'titleAr', 'titleEn', 'payloadJson', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'track', 'grade', 'titleAr', 'titleEn', 'payloadJson', 'updatedAt']) &&
+        isValidId(data.id) &&
+        isValidTrack(data.track) &&
+        data.grade is string && data.grade.size() <= 64 &&
+        data.titleAr is string && data.titleAr.size() <= 300 &&
+        data.titleEn is string && data.titleEn.size() <= 300 &&
+        data.payloadJson is string && data.payloadJson.size() <= 100000 &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidLabConfig(data) {
+      return data.keys().hasAll(['id', 'category', 'payloadJson', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'category', 'payloadJson', 'updatedAt']) &&
+        isValidId(data.id) &&
+        data.category in ['mechanics', 'electricity', 'waves', 'magnetism', 'optics'] &&
+        data.payloadJson is string && data.payloadJson.size() <= 100000 &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidPlatformSetting(data) {
+      return data.keys().hasAll(['id', 'payloadJson', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'payloadJson', 'updatedAt']) &&
+        isValidId(data.id) &&
+        data.payloadJson is string && data.payloadJson.size() <= 100000 &&
+        data.updatedAt is timestamp;
+    }
+
+    // --- Collection Rules ---
+
+    // 1. Admins Registry
+    match /admins/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isAdmin() && isValidId(userId) && isValidAdminUser(incoming());
+      allow update: if isAdmin() && isValidId(userId) && isValidAdminUser(incoming());
+      allow delete: if isAdmin() && isValidId(userId);
+    }
+
+    // 2. Users (PII Isolated)
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isValidId(userId) && isVerified() && isValidUserProfile(incoming()) && (
+        isAdmin() || (
+          isOwner(userId) &&
+          incoming().uid == request.auth.uid &&
+          incoming().role == 'student' &&
+          incoming().points == 0 &&
+          incoming().level == 1 &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time
+        )
+      );
+      allow update: if isValidId(userId) && isVerified() && isValidUserProfile(incoming()) && (
+        isAdmin() || (
+          isOwner(userId) &&
+          incoming().uid == existing().uid &&
+          incoming().role == existing().role &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          (
+            // Action: Track & Preferences Update
+            incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoURL', 'track', 'grade', 'preferredLang', 'updatedAt']) ||
+            // Action: Student Gamification Progress Update
+            incoming().diff(existing()).affectedKeys().hasOnly(['points', 'level', 'badges', 'updatedAt'])
+          )
+        )
+      );
+      allow delete: if isAdmin() && isValidId(userId);
+
+      // 2a. Lesson Progress Subcollection
+      match /progress/{lessonId} {
+        allow get: if isValidId(userId) && isValidId(lessonId) && (isOwner(userId) || isAdmin());
+        allow list: if isValidId(userId) && (isOwner(userId) || isAdmin()) && resource.data.userId == userId;
+        allow create: if isValidId(userId) && isValidId(lessonId) && isVerified() &&
+          isValidLessonProgress(incoming(), userId) &&
+          incoming().updatedAt == request.time &&
+          exists(/databases/$(database)/documents/users/$(userId)) &&
+          (isOwner(userId) || isAdmin());
+        allow update: if isValidId(userId) && isValidId(lessonId) && isVerified() &&
+          isValidLessonProgress(incoming(), userId) &&
+          incoming().userId == existing().userId &&
+          incoming().lessonId == existing().lessonId &&
+          incoming().updatedAt == request.time &&
+          exists(/databases/$(database)/documents/users/$(userId)) && (
+            isAdmin() || (
+              isOwner(userId) &&
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'completedParts', 'isCompleted', 'quizScore', 'studyMinutes', 'lastAccessedAt', 'updatedAt'
+              ])
+            )
+          );
+        allow delete: if isValidId(userId) && isValidId(lessonId) && (isOwner(userId) || isAdmin());
+      }
+
+      // 2b. Study Tasks Subcollection
+      match /studyTasks/{taskId} {
+        allow get: if isValidId(userId) && isValidId(taskId) && (isOwner(userId) || isAdmin());
+        allow list: if isValidId(userId) && (isOwner(userId) || isAdmin()) && resource.data.userId == userId;
+        allow create: if isValidId(userId) && isValidId(taskId) && isVerified() &&
+          isValidStudyTask(incoming(), userId) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          exists(/databases/$(database)/documents/users/$(userId)) &&
+          (isOwner(userId) || isAdmin());
+        allow update: if isValidId(userId) && isValidId(taskId) && isVerified() &&
+          isValidStudyTask(incoming(), userId) &&
+          incoming().userId == existing().userId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          exists(/databases/$(database)/documents/users/$(userId)) && (
+            isAdmin() || (
+              isOwner(userId) &&
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'title', 'lessonId', 'scheduledDate', 'durationMinutes', 'taskType', 'completed', 'updatedAt'
+              ])
+            )
+          );
+        allow delete: if isValidId(userId) && isValidId(taskId) && (isOwner(userId) || isAdmin());
+      }
+
+      // 2c. Exam Attempts Subcollection (with Terminal State Locking)
+      match /examAttempts/{attemptId} {
+        allow get: if isValidId(userId) && isValidId(attemptId) && (isOwner(userId) || isAdmin());
+        allow list: if isValidId(userId) && (isOwner(userId) || isAdmin()) && resource.data.userId == userId;
+        allow create: if isValidId(userId) && isValidId(attemptId) && isVerified() &&
+          isValidExamAttempt(incoming(), userId) &&
+          incoming().startedAt == request.time &&
+          incoming().updatedAt == request.time &&
+          exists(/databases/$(database)/documents/users/$(userId)) &&
+          (isOwner(userId) || isAdmin());
+        allow update: if isValidId(userId) && isValidId(attemptId) && isVerified() &&
+          isValidExamAttempt(incoming(), userId) &&
+          incoming().userId == existing().userId &&
+          incoming().startedAt == existing().startedAt &&
+          incoming().updatedAt == request.time &&
+          exists(/databases/$(database)/documents/users/$(userId)) && (
+            isAdmin() || (
+              isOwner(userId) &&
+              existing().status == 'in_progress' && (
+                (incoming().status == 'in_progress' && incoming().diff(existing()).affectedKeys().hasOnly(['answersJson', 'updatedAt'])) ||
+                (incoming().status == 'submitted' && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'score', 'answersJson', 'updatedAt']))
+              )
+            )
+          );
+        allow delete: if isValidId(userId) && isValidId(attemptId) && isAdmin();
+      }
+
+      // 2d. AI Tutor Sessions Subcollection
+      match /tutorSessions/{sessionId} {
+        allow get: if isValidId(userId) && isValidId(sessionId) && (isOwner(userId) || isAdmin());
+        allow list: if isValidId(userId) && (isOwner(userId) || isAdmin()) && resource.data.userId == userId;
+        allow create: if isValidId(userId) && isValidId(sessionId) && isVerified() &&
+          isValidTutorSession(incoming(), userId) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          exists(/databases/$(database)/documents/users/$(userId)) &&
+          (isOwner(userId) || isAdmin());
+        allow update: if isValidId(userId) && isValidId(sessionId) && isVerified() &&
+          isValidTutorSession(incoming(), userId) &&
+          incoming().userId == existing().userId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          exists(/databases/$(database)/documents/users/$(userId)) && (
+            isAdmin() || (
+              isOwner(userId) &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['title', 'mode', 'messagesJson', 'updatedAt'])
+            )
+          );
+        allow delete: if isValidId(userId) && isValidId(sessionId) && (isOwner(userId) || isAdmin());
+      }
+
+      // 2e. Saved Physics Graphs Subcollection
+      match /graphs/{graphId} {
+        allow get: if isValidId(userId) && isValidId(graphId) && (isOwner(userId) || isAdmin());
+        allow list: if isValidId(userId) && (isOwner(userId) || isAdmin()) && resource.data.userId == userId;
+        allow create: if isValidId(userId) && isValidId(graphId) && isVerified() &&
+          isValidSavedGraph(incoming(), userId) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          exists(/databases/$(database)/documents/users/$(userId)) &&
+          (isOwner(userId) || isAdmin());
+        allow update: if isValidId(userId) && isValidId(graphId) && isVerified() &&
+          isValidSavedGraph(incoming(), userId) &&
+          incoming().userId == existing().userId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          exists(/databases/$(database)/documents/users/$(userId)) && (
+            isAdmin() || (
+              isOwner(userId) &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['title', 'graphType', 'xLabel', 'yLabel', 'pointsJson', 'updatedAt'])
+            )
+          );
+        allow delete: if isValidId(userId) && isValidId(graphId) && (isOwner(userId) || isAdmin());
+      }
+    }
+
+    // 3. Public Leaderboard (Strictly Non-PII)
+    match /leaderboardPublic/{userId} {
+      allow get: if isValidId(userId) && isSignedIn();
+      allow list: if isSignedIn() && resource.data.points >= 0;
+      allow create: if isValidId(userId) && isVerified() &&
+        isValidLeaderboardEntry(incoming(), userId) &&
+        incoming().updatedAt == request.time &&
+        (isOwner(userId) || isAdmin());
+      allow update: if isValidId(userId) && isVerified() &&
+        isValidLeaderboardEntry(incoming(), userId) &&
+        incoming().uid == existing().uid &&
+        incoming().updatedAt == request.time && (
+          isAdmin() || (
+            isOwner(userId) &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'displayName', 'track', 'grade', 'points', 'accuracy', 'level', 'updatedAt'
+            ])
+          )
+        );
+      allow delete: if isAdmin() && isValidId(userId);
+    }
+
+    // 4. Curriculum Lessons (Admin-Managed Educational Content)
+    match /curricula/{lessonId} {
+      allow get: if isValidId(lessonId) && isSignedIn();
+      allow list: if isSignedIn() && resource.data.track in ['thanawiya', 'baccalaureate', 'american'];
+      allow create: if isAdmin() && isValidId(lessonId) && isValidCurriculumLesson(incoming()) && incoming().updatedAt == request.time;
+      allow update: if isAdmin() && isValidId(lessonId) && isValidCurriculumLesson(incoming()) && incoming().updatedAt == request.time;
+      allow delete: if isAdmin() && isValidId(lessonId);
+    }
+
+    // 5. Question Bank (Admin-Managed Educational Content)
+    match /questions/{questionId} {
+      allow get: if isValidId(questionId) && isSignedIn();
+      allow list: if isSignedIn() && resource.data.track in ['thanawiya', 'baccalaureate', 'american'];
+      allow create: if isAdmin() && isValidId(questionId) && isValidQuestionItem(incoming()) && incoming().updatedAt == request.time;
+      allow update: if isAdmin() && isValidId(questionId) && isValidQuestionItem(incoming()) && incoming().updatedAt == request.time;
+      allow delete: if isAdmin() && isValidId(questionId);
+    }
+
+    // 6. Exam Blueprints (Admin-Managed Educational Content)
+    match /exams/{examId} {
+      allow get: if isValidId(examId) && isSignedIn();
+      allow list: if isSignedIn() && resource.data.track in ['thanawiya', 'baccalaureate', 'american'];
+      allow create: if isAdmin() && isValidId(examId) && isValidExamBlueprint(incoming()) && incoming().updatedAt == request.time;
+      allow update: if isAdmin() && isValidId(examId) && isValidExamBlueprint(incoming()) && incoming().updatedAt == request.time;
+      allow delete: if isAdmin() && isValidId(examId);
+    }
+
+    // 7. Virtual Lab Configs (Admin-Managed Educational Content)
+    match /labConfigs/{labId} {
+      allow get: if isValidId(labId) && isSignedIn();
+      allow list: if isSignedIn() && resource.data.category in ['mechanics', 'electricity', 'waves', 'magnetism', 'optics'];
+      allow create: if isAdmin() && isValidId(labId) && isValidLabConfig(incoming()) && incoming().updatedAt == request.time;
+      allow update: if isAdmin() && isValidId(labId) && isValidLabConfig(incoming()) && incoming().updatedAt == request.time;
+      allow delete: if isAdmin() && isValidId(labId);
+    }
+
+    // 8. Platform Settings & Announcements (Admin-Managed)
+    match /platformSettings/{settingId} {
+      allow get: if isValidId(settingId) && isSignedIn();
+      allow list: if isSignedIn() && resource.data.id >= '';
+      allow create: if isAdmin() && isValidId(settingId) && isValidPlatformSetting(incoming()) && incoming().updatedAt == request.time;
+      allow update: if isAdmin() && isValidId(settingId) && isValidPlatformSetting(incoming()) && incoming().updatedAt == request.time;
+      allow delete: if isAdmin() && isValidId(settingId);
+    }
+  }
+}

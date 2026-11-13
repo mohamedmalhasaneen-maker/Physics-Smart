@@ -1,0 +1,261 @@
+{
+  "entities": {
+    "AdminUser": {
+      "title": "AdminUser",
+      "description": "Registry of verified platform administrators",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "email": { "type": "string", "format": "email", "maxLength": 200 },
+        "grantedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "grantedAt"]
+    },
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Student or admin user profile with strict track and grade selection",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "email": { "type": "string", "format": "email", "maxLength": 200 },
+        "photoURL": { "type": "string", "maxLength": 500 },
+        "track": { "type": "string", "enum": ["thanawiya", "baccalaureate", "american", "unset"] },
+        "grade": { "type": "string", "maxLength": 64 },
+        "preferredLang": { "type": "string", "enum": ["ar", "en"] },
+        "role": { "type": "string", "enum": ["student", "admin"] },
+        "points": { "type": "number" },
+        "level": { "type": "number" },
+        "badges": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "displayName", "email", "track", "grade", "preferredLang", "role", "points", "level", "createdAt", "updatedAt"]
+    },
+    "LessonProgress": {
+      "title": "LessonProgress",
+      "description": "Student progress and mastery record for a specific lesson",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "lessonId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "track": { "type": "string", "enum": ["thanawiya", "baccalaureate", "american"] },
+        "completedParts": { "type": "array" },
+        "isCompleted": { "type": "boolean" },
+        "quizScore": { "type": "number" },
+        "studyMinutes": { "type": "number" },
+        "lastAccessedAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "lessonId", "track", "isCompleted", "quizScore", "studyMinutes", "updatedAt"]
+    },
+    "StudyTask": {
+      "title": "StudyTask",
+      "description": "Student daily or weekly study planner task",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "track": { "type": "string", "enum": ["thanawiya", "baccalaureate", "american"] },
+        "lessonId": { "type": "string", "maxLength": 128 },
+        "scheduledDate": { "type": "string", "maxLength": 32 },
+        "durationMinutes": { "type": "number" },
+        "taskType": { "type": "string", "enum": ["study", "practice", "review", "exam"] },
+        "completed": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "title", "track", "scheduledDate", "durationMinutes", "taskType", "completed", "createdAt", "updatedAt"]
+    },
+    "ExamAttempt": {
+      "title": "ExamAttempt",
+      "description": "Student exam attempt with saved answers and score",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "examId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "examTitle": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "track": { "type": "string", "enum": ["thanawiya", "baccalaureate", "american"] },
+        "status": { "type": "string", "enum": ["in_progress", "submitted"] },
+        "score": { "type": "number" },
+        "maxScore": { "type": "number" },
+        "answersJson": { "type": "string", "maxLength": 20000 },
+        "startedAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "examId", "examTitle", "track", "status", "score", "maxScore", "startedAt", "updatedAt"]
+    },
+    "TutorSession": {
+      "title": "TutorSession",
+      "description": "Saved AI Physics Tutor conversation session",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "mode": { "type": "string", "enum": ["tutor", "analyzer", "examiner"] },
+        "track": { "type": "string", "enum": ["thanawiya", "baccalaureate", "american"] },
+        "messagesJson": { "type": "string", "maxLength": 50000 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "title", "mode", "track", "messagesJson", "createdAt", "updatedAt"]
+    },
+    "SavedGraph": {
+      "title": "SavedGraph",
+      "description": "Saved physics graph and mathematical analysis configuration",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "graphType": { "type": "string", "maxLength": 64 },
+        "xLabel": { "type": "string", "maxLength": 64 },
+        "yLabel": { "type": "string", "maxLength": 64 },
+        "pointsJson": { "type": "string", "maxLength": 20000 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "title", "graphType", "pointsJson", "createdAt", "updatedAt"]
+    },
+    "LeaderboardEntry": {
+      "title": "LeaderboardEntry",
+      "description": "Non-PII public leaderboard entry for student competitions",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "track": { "type": "string", "enum": ["thanawiya", "baccalaureate", "american"] },
+        "grade": { "type": "string", "maxLength": 64 },
+        "points": { "type": "number" },
+        "accuracy": { "type": "number" },
+        "level": { "type": "number" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "displayName", "track", "grade", "points", "accuracy", "level", "updatedAt"]
+    },
+    "CurriculumLesson": {
+      "title": "CurriculumLesson",
+      "description": "Admin-managed or imported curriculum lesson strictly scoped by track and grade",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "track": { "type": "string", "enum": ["thanawiya", "baccalaureate", "american"] },
+        "grade": { "type": "string", "maxLength": 64 },
+        "titleAr": { "type": "string", "maxLength": 300 },
+        "titleEn": { "type": "string", "maxLength": 300 },
+        "payloadJson": { "type": "string", "maxLength": 200000 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "track", "grade", "titleAr", "titleEn", "payloadJson", "updatedAt"]
+    },
+    "QuestionItem": {
+      "title": "QuestionItem",
+      "description": "Admin-managed physics question bank entry",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "track": { "type": "string", "enum": ["thanawiya", "baccalaureate", "american"] },
+        "grade": { "type": "string", "maxLength": 64 },
+        "difficulty": { "type": "string", "enum": ["easy", "medium", "hard", "advanced"] },
+        "payloadJson": { "type": "string", "maxLength": 50000 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "track", "grade", "difficulty", "payloadJson", "updatedAt"]
+    },
+    "ExamBlueprint": {
+      "title": "ExamBlueprint",
+      "description": "Admin-managed exam template",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "track": { "type": "string", "enum": ["thanawiya", "baccalaureate", "american"] },
+        "grade": { "type": "string", "maxLength": 64 },
+        "titleAr": { "type": "string", "maxLength": 300 },
+        "titleEn": { "type": "string", "maxLength": 300 },
+        "payloadJson": { "type": "string", "maxLength": 100000 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "track", "grade", "titleAr", "titleEn", "payloadJson", "updatedAt"]
+    },
+    "LabConfig": {
+      "title": "LabConfig",
+      "description": "Admin-managed virtual lab instruction and metadata",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "category": { "type": "string", "enum": ["mechanics", "electricity", "waves", "magnetism", "optics"] },
+        "payloadJson": { "type": "string", "maxLength": 100000 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "category", "payloadJson", "updatedAt"]
+    },
+    "PlatformSetting": {
+      "title": "PlatformSetting",
+      "description": "General platform settings, announcements, and AI configuration",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "payloadJson": { "type": "string", "maxLength": 100000 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "payloadJson", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/admins/{userId}": {
+      "schema": { "$ref": "#/entities/AdminUser" },
+      "description": "Trusted administrator identities"
+    },
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Student account profile and preferences (PII-isolated)"
+    },
+    "/users/{userId}/progress/{lessonId}": {
+      "schema": { "$ref": "#/entities/LessonProgress" },
+      "description": "Per-lesson student learning progress"
+    },
+    "/users/{userId}/studyTasks/{taskId}": {
+      "schema": { "$ref": "#/entities/StudyTask" },
+      "description": "Student study planner tasks"
+    },
+    "/users/{userId}/examAttempts/{attemptId}": {
+      "schema": { "$ref": "#/entities/ExamAttempt" },
+      "description": "Student exam attempts and saved answers"
+    },
+    "/users/{userId}/tutorSessions/{sessionId}": {
+      "schema": { "$ref": "#/entities/TutorSession" },
+      "description": "Saved AI Physics Tutor conversation sessions"
+    },
+    "/users/{userId}/graphs/{graphId}": {
+      "schema": { "$ref": "#/entities/SavedGraph" },
+      "description": "Saved Physics Graphing & Analysis datasets"
+    },
+    "/leaderboardPublic/{userId}": {
+      "schema": { "$ref": "#/entities/LeaderboardEntry" },
+      "description": "Non-PII public student leaderboard entries"
+    },
+    "/curricula/{lessonId}": {
+      "schema": { "$ref": "#/entities/CurriculumLesson" },
+      "description": "Admin-managed curriculum lessons"
+    },
+    "/questions/{questionId}": {
+      "schema": { "$ref": "#/entities/QuestionItem" },
+      "description": "Admin-managed physics question bank"
+    },
+    "/exams/{examId}": {
+      "schema": { "$ref": "#/entities/ExamBlueprint" },
+      "description": "Admin-managed exam templates"
+    },
+    "/labConfigs/{labId}": {
+      "schema": { "$ref": "#/entities/LabConfig" },
+      "description": "Admin-managed virtual lab descriptions and steps"
+    },
+    "/platformSettings/{settingId}": {
+      "schema": { "$ref": "#/entities/PlatformSetting" },
+      "description": "Global platform configuration and announcements"
+    }
+  }
+}
