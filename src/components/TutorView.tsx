@@ -1,11 +1,13 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Language,
   Lesson,
+  StudyLanguage,
   TutorMessage,
   TutorSession,
   UserProfile,
 } from '../types/physics';
+import { pickStudyText } from '../lib/bilingual';
 import { RichPhysicsText } from './MathRenderer';
 import {
   Bot,
@@ -19,6 +21,7 @@ import {
 
 interface TutorViewProps {
   lang: Language;
+  studyLang: StudyLanguage;
   profile: UserProfile;
   lessons: Lesson[];
   sessions: TutorSession[];
@@ -29,6 +32,7 @@ interface TutorViewProps {
 
 export function TutorView({
   lang,
+  studyLang,
   profile,
   lessons,
   sessions,
@@ -39,11 +43,15 @@ export function TutorView({
   const scopedLessons = lessons.filter((l) => l.track === profile.track && l.grade === profile.grade);
 
   const [mode, setMode] = useState<'tutor' | 'analyzer' | 'examiner'>('tutor');
-  const [tutorLang, setTutorLang] = useState<Language>(lang);
+  const [tutorLang, setTutorLang] = useState<StudyLanguage>(studyLang);
   const [level, setLevel] = useState<'simple' | 'intermediate' | 'advanced'>('intermediate');
   const [style, setStyle] = useState<'conceptual' | 'mathematical' | 'visual_analogy' | 'exam_focused'>('conceptual');
   const [detail, setDetail] = useState<'concise' | 'detailed'>('detailed');
   const [groundedLessonId, setGroundedLessonId] = useState<string>(initialLessonContext?.id || '');
+
+  useEffect(() => {
+    setTutorLang(studyLang);
+  }, [studyLang]);
 
   const [activeSessionId, setActiveSessionId] = useState<string>(`session-${Date.now()}`);
   const [messages, setMessages] = useState<TutorMessage[]>([]);
@@ -72,8 +80,8 @@ export function TutorView({
   const buildLessonContextString = () => {
     const lesson = scopedLessons.find((l) => l.id === groundedLessonId);
     if (!lesson) return '';
-    return `Title: ${lesson.titleEn} / ${lesson.titleAr}\nIntro: ${lesson.introEn}\nLaws: ${lesson.lawsLatex
-      .map((x) => `${x.nameEn}: ${x.latex}`)
+    return `Title: ${lesson.titleEn} / ${lesson.titleAr}\nIntro (EN): ${lesson.introEn}\nIntro (AR): ${lesson.introAr}\nLaws: ${lesson.lawsLatex
+      .map((x) => `${x.nameEn} (${x.nameAr}): ${x.latex}`)
       .join('; ')}`;
   };
 
@@ -234,7 +242,7 @@ export function TutorView({
               <option value="">{lang === 'ar' ? 'فيزياء عامة (حسب مسارك)' : 'General (Track-Scoped)'}</option>
               {scopedLessons.map((l) => (
                 <option key={l.id} value={l.id}>
-                  {lang === 'ar' ? l.titleAr : l.titleEn}
+                  {pickStudyText(l.titleAr, l.titleEn, tutorLang)}
                 </option>
               ))}
             </select>
@@ -247,11 +255,12 @@ export function TutorView({
               </label>
               <select
                 value={tutorLang}
-                onChange={(e) => setTutorLang(e.target.value as Language)}
+                onChange={(e) => setTutorLang(e.target.value as StudyLanguage)}
                 className="w-full px-2.5 py-2 rounded-xl glass-input text-xs"
               >
-                <option value="ar">العربية</option>
+                <option value="ar">{lang === 'ar' ? 'العربية' : 'Arabic'}</option>
                 <option value="en">English</option>
+                <option value="bilingual">{lang === 'ar' ? 'اللغتان معًا (عربي + EN)' : 'Bilingual (AR + EN)'}</option>
               </select>
             </div>
             <div>
@@ -356,7 +365,13 @@ export function TutorView({
                   : 'Ask any physics concept, upload a problem or circuit diagram, or switch to Examiner Mode to test yourself.'}
               </p>
               <div className="flex flex-wrap justify-center gap-2 pt-2">
-                {(lang === 'ar'
+                {(profile.track === 'american' || tutorLang === 'bilingual'
+                  ? [
+                      'Explain Newton’s Second Law ($F_{net} = ma$) in Arabic & English',
+                      'اشرح الفرق بين المسافة (Distance) والإزاحة (Displacement) مع مثال تطبيقي',
+                      'Quiz me on AP Physics Kinematics graphs & slope meaning',
+                    ]
+                  : lang === 'ar'
                   ? [
                       'اشرح لي لماذا ينخفض جهد البطارية عند غلق الدائرة',
                       'اختبرني في معادلات الحركة بعجلة منتظمة',
@@ -371,7 +386,7 @@ export function TutorView({
                   <button
                     key={idx}
                     onClick={() => setInputText(prompt)}
-                    className="px-3 py-1.5 rounded-xl glass-btn-secondary text-xs"
+                    className="px-3 py-1.5 rounded-xl glass-btn-secondary text-xs cursor-pointer"
                   >
                     {prompt}
                   </button>
@@ -385,6 +400,7 @@ export function TutorView({
                 className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
               >
                 <div
+                  dir="auto"
                   className={`max-w-[88%] rounded-2xl px-4 py-3 ${
                     msg.role === 'user'
                       ? 'glass-btn-primary text-white'

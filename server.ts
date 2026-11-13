@@ -81,7 +81,7 @@ app.post('/api/ai/tutor', async (req, res) => {
     } = req.body as {
       message: string;
       mode: 'tutor' | 'analyzer' | 'examiner';
-      language: 'ar' | 'en';
+      language: 'ar' | 'en' | 'bilingual';
       level: 'simple' | 'intermediate' | 'advanced';
       style: string;
       detail: 'concise' | 'detailed';
@@ -104,7 +104,7 @@ app.post('/api/ai/tutor', async (req, res) => {
         ? 'الثانوية العامة المصرية (Egyptian Thanawiya Amma)'
         : track === 'baccalaureate'
         ? 'البكالوريا المصرية (Egyptian Baccalaureate)'
-        : 'American Diploma Physics';
+        : 'American Diploma Physics (High School / Honors / AP Physics — Bilingual Arabic & English Support)';
 
     const modeInstructions =
       mode === 'tutor'
@@ -113,9 +113,19 @@ app.post('/api/ai/tutor', async (req, res) => {
         ? `You are in ANALYZER MODE (وضع المحلل). Dissect the problem or diagram rigorously: list Givens with units, Target, SI unit conversions, Formula selection rationale, Algebraic substitution, Numerical evaluation, and Physical sanity check.`
         : `You are in EXAMINER MODE (وضع الممتحن). Ask ONE challenging conceptual or numerical question appropriate to the student's track and wait for their attempt. NEVER reveal the final answer before the student attempts! If the message contains the student's attempt, grade it carefully, point out exact errors or unit mistakes, explain why, and then give the next question or follow-up.`;
 
+    const languageInstruction =
+      language === 'bilingual'
+        ? `BILINGUAL (Arabic + English): Respond clearly in BOTH Arabic and English! Provide:
+  (1) A complete, natural scientific Arabic explanation (العربية الفصحى العلمية) with key English physics terms in parentheses.
+  (2) Directly below or paired cleanly, an English Explanation section ("**English Explanation:**") covering the same reasoning and terminology in crisp academic English.
+  You MUST understand student inputs written in Arabic, English, or mixed Arabic-English (and images in either language).`
+        : language === 'ar'
+        ? 'Arabic (العربية الفصحى العلمية الواضحة مع المصطلحات الإنجليزية الفيزيائية بين قوسين). Understand questions written in Arabic, English, or mixed Arabic-English.'
+        : 'English (clear academic English; understand questions written in Arabic, English, or mixed Arabic-English).';
+
     const systemInstruction = `You are Physics Smart AI Tutor (مدرس الفيزياء الذكي).
 Student Track: ${trackLabel} | Grade: ${grade || 'General'}.
-Response Language: ${language === 'ar' ? 'Arabic (العربية الفصحى العلمية الواضحة مع المصطلحات الإنجليزية بين قوسين)' : 'English'}.
+Response Language: ${languageInstruction}.
 Explanation Level: ${level}. Style: ${style}. Depth: ${detail}.
 ${modeInstructions}
 
@@ -178,7 +188,7 @@ app.post('/api/ai/solver', async (req, res) => {
       problemText?: string;
       manualGivens?: Array<{ symbol: string; value: string; unit: string }>;
       manualTarget?: string;
-      language?: 'ar' | 'en';
+      language?: 'ar' | 'en' | 'bilingual';
       track?: string;
       attachment?: { mimeType: string; data: string };
     };
@@ -195,9 +205,14 @@ app.post('/api/ai/solver', async (req, res) => {
         ? `\nManual Givens:\n${manualGivens.map((g) => `- ${g.symbol} = ${g.value} ${g.unit}`).join('\n')}\nTarget: ${manualTarget}`
         : '';
 
-    const prompt = `Analyze and solve the following physics problem for the ${track} curriculum in ${
-      language === 'ar' ? 'Arabic (with standard English physics symbols/LaTeX)' : 'English'
-    }.
+    const solverLangDesc =
+      language === 'bilingual'
+        ? 'BOTH Arabic and English (Bilingual mode): for every narrative field (clarificationQuestion, understanding, target, unitConversions, formulaReason, calculations, finalAnswerText, sanityCheck, and givens[].meaning), write a clear scientific Arabic line first followed by a newline and the matching English translation/terminology on the next line, while keeping selectedFormulaLatex and substitutionLatex pure LaTeX and verificationExpression pure mathjs arithmetic'
+        : language === 'ar'
+        ? 'Arabic (with standard English physics symbols/LaTeX and SI units)'
+        : 'English';
+
+    const prompt = `Analyze and solve the following physics problem (which may be written in Arabic, English, or mixed text/image) for the ${track} curriculum in ${solverLangDesc}.
 If the problem is unclear or missing critical numerical data, set needsClarification=true and explain what is missing in clarificationQuestion.
 Otherwise, provide all 11 pedagogical steps accurately, plus a pure numeric mathjs-compatible arithmetic expression in "verificationExpression" (using only numbers, +, -, *, /, ^, sqrt, sin, cos, tan, pi) so our deterministic math engine can verify the final scalar result!
 
@@ -318,13 +333,19 @@ app.post('/api/ai/solver/explain-step', async (req, res) => {
       stepTitle: string;
       stepContent: string;
       problemContext: string;
-      language?: 'ar' | 'en';
+      language?: 'ar' | 'en' | 'bilingual';
     };
     const ai = getGeminiClient();
+    const stepLangPrompt =
+      language === 'bilingual'
+        ? 'Bilingual (Arabic explanation first, followed by a clear English explanation section)'
+        : language === 'ar'
+        ? 'Arabic (with English physics terms in parentheses)'
+        : 'English';
     const response = await ai.models.generateContent({
       model: 'gemini-4-hydrogen',
       contents: `Explain this specific physics solution step clearly for a student who wants deeper understanding.
-Language: ${language === 'ar' ? 'Arabic' : 'English'}
+Language: ${stepLangPrompt}
 Step: ${stepTitle}
 Step Content: ${stepContent}
 Original Problem Context: ${problemContext}

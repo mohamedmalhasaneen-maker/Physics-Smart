@@ -4,12 +4,15 @@ import {
   Language,
   Lesson,
   LessonProgress,
+  StudyLanguage,
   UserProfile,
 } from '../types/physics';
+import { pickStudyText } from '../lib/bilingual';
 import { Award, BarChart3, BookOpen, CheckCircle2, Clock, TrendingUp } from 'lucide-react';
 
 interface AnalyticsViewProps {
   lang: Language;
+  studyLang: StudyLanguage;
   profile: UserProfile;
   lessons: Lesson[];
   progressMap: Record<string, LessonProgress>;
@@ -19,6 +22,7 @@ interface AnalyticsViewProps {
 
 export function AnalyticsView({
   lang,
+  studyLang,
   profile,
   lessons,
   progressMap,
@@ -132,12 +136,14 @@ export function AnalyticsView({
             const done = !!p?.isCompleted;
             return (
               <div key={lesson.id} className="glass-subcard rounded-xl p-3.5 space-y-2">
-                <div className="flex items-center justify-between text-xs sm:text-sm">
-                  <span className="font-medium flex items-center gap-2">
+                <div className="flex items-center justify-between gap-3 text-xs sm:text-sm">
+                  <span className="font-medium flex items-center gap-2 min-w-0">
                     {done && <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />}
-                    {lang === 'ar' ? lesson.titleAr : lesson.titleEn}
+                    <span dir="auto" className="truncate">
+                      {pickStudyText(lesson.titleAr, lesson.titleEn, studyLang)}
+                    </span>
                   </span>
-                  <span className="font-mono-num text-xs text-slate-500 dark:text-slate-400">
+                  <span className="font-mono-num text-xs text-slate-500 dark:text-slate-400 shrink-0">
                     {done ? `${score}%` : lang === 'ar' ? 'متبقي' : 'Remaining'}
                   </span>
                 </div>
@@ -171,7 +177,7 @@ export function AnalyticsView({
                 key={l.id}
                 className="glass-subcard rounded-xl px-4 py-2.5 flex items-center justify-between gap-3 text-sm"
               >
-                <span>{lang === 'ar' ? l.titleAr : l.titleEn}</span>
+                <span dir="auto">{pickStudyText(l.titleAr, l.titleEn, studyLang)}</span>
                 <button
                   onClick={() => onOpenLesson(l.id)}
                   className="glass-btn-secondary px-3 py-1.5 rounded-lg text-xs font-semibold text-blue-600 dark:text-cyan-400 cursor-pointer shrink-0"

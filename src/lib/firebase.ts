@@ -1,4 +1,4 @@
-import { initializeApp } from 'firebase/app';
+import { getApp, getApps, initializeApp } from 'firebase/app';
 import {
   getAuth,
   GoogleAuthProvider,
@@ -13,15 +13,32 @@ import {
 } from 'firebase/auth';
 import {
   getFirestore,
+  initializeFirestore,
   doc,
   getDocFromServer,
   serverTimestamp,
+  type Firestore,
 } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 import { Language } from '../types/physics';
 
-const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
+
+export const db: Firestore = (() => {
+  try {
+    return initializeFirestore(
+      app,
+      {
+        experimentalForceLongPolling: true,
+        ignoreUndefinedProperties: true,
+      },
+      firebaseConfig.firestoreDatabaseId
+    );
+  } catch {
+    return getFirestore(app, firebaseConfig.firestoreDatabaseId);
+  }
+})();
+
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
 
@@ -163,18 +180,47 @@ export function handleFirestoreError(
   throw new Error(JSON.stringify(errInfo));
 }
 
+export function isFirestoreOfflineError(error: unknown): boolean {
+  const code =
+    error && typeof error === 'object' && 'code' in error && typeof (error as any).code === 'string'
+      ? (error as any).code.toLowerCase()
+      : '';
+  const message = (error instanceof Error ? error.message : String(error || '')).toLowerCase();
+  return (
+    code === 'unavailable' ||
+    code === 'failed-precondition' && message.includes('offline') ||
+    message.includes('the client is offline') ||
+    message.includes('client is offline') ||
+    message.includes('could not reach cloud firestore backend')
+  );
+}
+
 export async function testFirestoreConnection(): Promise<boolean> {
-  try {
-    await getDocFromServer(doc(db, 'test', 'connection'));
-    return true;
-  } catch (error) {
-    if (error instanceof Error && error.message.includes('the client is offline')) {
-      console.error('Please check your Firebase configuration. Client is offline.');
-      return false;
+  const probe = async (): Promise<boolean> => {
+    try {
+      await getDocFromServer(doc(db, 'test', 'connection'));
+      return true;
+    } catch (error) {
+      if (isFirestoreOfflineError(error)) {
+        return false;
+      }
+      // Permission denied on /test/connection is normal and proves server connectivity
+      return true;
     }
-    // Permission denied on /test/connection is normal and proves server connectivity
-    return true;
+  };
+
+  const firstTry = await probe();
+  if (firstTry) return true;
+
+  // Retry once after brief warmup if browser is online
+  if (typeof navigator === 'undefined' || navigator.onLine !== false) {
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    const secondTry = await probe();
+    if (secondTry) return true;
   }
+
+  console.warn('Firestore backend is currently unreachable (offline mode active).');
+  return false;
 }
 
 export {

@@ -1,14 +1,17 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { LabExperimentConfig, Language } from '../types/physics';
+import { LabExperimentConfig, Language, StudyLanguage } from '../types/physics';
 import { LatexBlock } from './MathRenderer';
+import { BilingualTextBlock, BilingualTitle } from './BilingualBlock';
+import { mergeBilingualOptions, pickStudyText } from '../lib/bilingual';
 import { Pause, Play, RotateCcw, StepForward, CheckCircle2 } from 'lucide-react';
 
 interface VirtualLabViewProps {
   lang: Language;
+  studyLang: StudyLanguage;
   labs: LabExperimentConfig[];
 }
 
-export function VirtualLabView({ lang, labs }: VirtualLabViewProps) {
+export function VirtualLabView({ lang, studyLang, labs }: VirtualLabViewProps) {
   const [category, setCategory] = useState<'all' | 'mechanics' | 'electricity' | 'waves' | 'magnetism' | 'optics'>('all');
   const filteredLabs = category === 'all' ? labs : labs.filter((l) => l.category === category);
   const [selectedLabId, setSelectedLabId] = useState<string>(labs[0]?.id || 'lab-projectile');
@@ -778,7 +781,7 @@ export function VirtualLabView({ lang, labs }: VirtualLabViewProps) {
                   : 'glass-btn-secondary'
               }`}
             >
-              {lang === 'ar' ? l.titleAr : l.titleEn}
+              {pickStudyText(l.titleAr, l.titleEn, studyLang)}
             </button>
           ))}
         </div>
@@ -790,8 +793,15 @@ export function VirtualLabView({ lang, labs }: VirtualLabViewProps) {
           <div className="lg:col-span-8 space-y-4">
             <div className="rounded-2xl glass-card p-3 sm:p-4">
               <div className="rounded-xl border border-slate-800/90 bg-[#060D20] p-4 space-y-3">
-                <div className="flex items-center justify-between text-white">
-                  <h2 className="text-sm font-bold">{lang === 'ar' ? activeLab.titleAr : activeLab.titleEn}</h2>
+                <div className="flex items-center justify-between text-white gap-3">
+                  <BilingualTitle
+                    ar={activeLab.titleAr}
+                    en={activeLab.titleEn}
+                    studyLang={studyLang}
+                    as="h2"
+                    className="text-sm font-bold text-white"
+                    subClassName="text-[11px] font-medium text-cyan-300 mt-0.5"
+                  />
                   <div className="flex items-center gap-2">
                     <button
                       onClick={() => setRunning((r) => !r)}
@@ -835,9 +845,13 @@ export function VirtualLabView({ lang, labs }: VirtualLabViewProps) {
                   <LatexBlock key={i} latex={eq} />
                 ))}
               </div>
-              <p className="text-sm text-slate-700 dark:text-slate-300 leading-relaxed">
-                {lang === 'ar' ? activeLab.scientificExplanationAr : activeLab.scientificExplanationEn}
-              </p>
+              <BilingualTextBlock
+                ar={activeLab.scientificExplanationAr}
+                en={activeLab.scientificExplanationEn}
+                studyLang={studyLang}
+                rich
+                className="text-sm text-slate-700 dark:text-slate-300 leading-relaxed"
+              />
             </div>
           </div>
 
@@ -1050,9 +1064,18 @@ export function VirtualLabView({ lang, labs }: VirtualLabViewProps) {
               <h3 className="text-sm font-bold">
                 {lang === 'ar' ? 'خطوات تنفيذ التجربة' : 'Lab Procedure'}
               </h3>
-              <ol className="space-y-1.5 text-xs text-slate-600 dark:text-slate-300 list-decimal list-inside">
-                {(lang === 'ar' ? activeLab.procedureAr : activeLab.procedureEn).map((step, i) => (
-                  <li key={i}>{step}</li>
+              <ol className="space-y-2 text-xs text-slate-600 dark:text-slate-300 list-decimal list-inside">
+                {Array.from({
+                  length: Math.max(activeLab.procedureAr.length, activeLab.procedureEn.length),
+                }).map((_, i) => (
+                  <li key={i} className="space-y-1">
+                    <BilingualTextBlock
+                      ar={activeLab.procedureAr[i] || ''}
+                      en={activeLab.procedureEn[i] || ''}
+                      studyLang={studyLang}
+                      className="inline text-xs text-slate-600 dark:text-slate-300"
+                    />
+                  </li>
                 ))}
               </ol>
             </div>
@@ -1062,40 +1085,64 @@ export function VirtualLabView({ lang, labs }: VirtualLabViewProps) {
               <h3 className="text-sm font-bold">
                 {lang === 'ar' ? 'أسئلة التحقق بعد التجربة' : 'Post-Lab Check'}
               </h3>
-              {activeLab.postQuestions.map((pq, qIdx) => (
-                <div key={qIdx} className="space-y-2 text-xs">
-                  <p className="font-medium">{lang === 'ar' ? pq.qAr : pq.qEn}</p>
-                  <div className="space-y-1.5">
-                    {(lang === 'ar' ? pq.optionsAr : pq.optionsEn).map((opt, oIdx) => {
-                      const picked = postAnswers[qIdx] === oIdx;
-                      const correct = pq.correctIndex === oIdx;
-                      return (
-                        <button
-                          key={oIdx}
-                          onClick={() => setPostAnswers((p) => ({ ...p, [qIdx]: oIdx }))}
-                          className={`w-full text-start p-2.5 rounded-xl border flex items-center justify-between transition-all ${
-                            postAnswers[qIdx] === undefined
-                              ? 'glass-btn-secondary'
-                              : correct
-                              ? 'border-emerald-500/70 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
-                              : picked
-                              ? 'border-rose-500/70 bg-rose-500/15 text-rose-500'
-                              : 'border-slate-200/40 dark:border-white/10 opacity-60'
-                          }`}
-                        >
-                          <span>{opt}</span>
-                          {postAnswers[qIdx] !== undefined && correct && <CheckCircle2 className="w-3.5 h-3.5" />}
-                        </button>
-                      );
-                    })}
+              {activeLab.postQuestions.map((pq, qIdx) => {
+                const mergedOptions = mergeBilingualOptions(pq.optionsAr, pq.optionsEn, studyLang);
+                return (
+                  <div key={qIdx} className="space-y-2 text-xs">
+                    <BilingualTextBlock
+                      ar={pq.qAr}
+                      en={pq.qEn}
+                      studyLang={studyLang}
+                      rich
+                      className="font-medium"
+                    />
+                    <div className="space-y-1.5">
+                      {mergedOptions.map((opt, oIdx) => {
+                        const picked = postAnswers[qIdx] === oIdx;
+                        const correct = pq.correctIndex === oIdx;
+                        return (
+                          <button
+                            key={oIdx}
+                            onClick={() => setPostAnswers((p) => ({ ...p, [qIdx]: oIdx }))}
+                            className={`w-full text-start p-2.5 rounded-xl border flex items-center justify-between gap-2 transition-all ${
+                              postAnswers[qIdx] === undefined
+                                ? 'glass-btn-secondary'
+                                : correct
+                                ? 'border-emerald-500/70 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
+                                : picked
+                                ? 'border-rose-500/70 bg-rose-500/15 text-rose-500'
+                                : 'border-slate-200/40 dark:border-white/10 opacity-60'
+                            }`}
+                          >
+                            {studyLang === 'bilingual' ? (
+                              <div className="space-y-0.5 text-start flex-1">
+                                <span dir="rtl" className="block">{opt.ar}</span>
+                                {opt.en && opt.en !== opt.ar && (
+                                  <span dir="ltr" className="block text-[11px] opacity-80">{opt.en}</span>
+                                )}
+                              </div>
+                            ) : (
+                              <span dir={studyLang === 'ar' ? 'rtl' : 'ltr'} className="flex-1">
+                                {opt.single}
+                              </span>
+                            )}
+                            {postAnswers[qIdx] !== undefined && correct && <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {postAnswers[qIdx] !== undefined && (
+                      <BilingualTextBlock
+                        ar={pq.reasonAr}
+                        en={pq.reasonEn}
+                        studyLang={studyLang}
+                        rich
+                        className="text-slate-500 dark:text-slate-400"
+                      />
+                    )}
                   </div>
-                  {postAnswers[qIdx] !== undefined && (
-                    <p className="text-slate-500 dark:text-slate-400">
-                      {lang === 'ar' ? pq.reasonAr : pq.reasonEn}
-                    </p>
-                  )}
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         </div>

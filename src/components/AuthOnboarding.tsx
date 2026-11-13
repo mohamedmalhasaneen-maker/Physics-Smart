@@ -11,9 +11,10 @@ import {
   signOut,
 } from '../lib/firebase';
 import { EDUCATIONAL_TRACKS } from '../data/tracks';
-import { Language, ThemeMode, TrackId, UserProfile } from '../types/physics';
+import { Language, StudyLanguage, ThemeMode, TrackId, UserProfile } from '../types/physics';
 import { tFor } from '../i18n/translations';
 import { PhysicsAmbientBg } from './PhysicsAmbientBg';
+import { StudyLanguageSwitcher } from './BilingualBlock';
 import {
   Atom,
   ArrowRight,
@@ -41,8 +42,14 @@ interface AuthOnboardingProps {
     password: string;
     track: TrackId;
     grade: string;
+    studyLang?: StudyLanguage;
   }) => Promise<void>;
-  onSaveTrackSelection: (track: TrackId, grade: string, displayName?: string) => Promise<void>;
+  onSaveTrackSelection: (
+    track: TrackId,
+    grade: string,
+    displayName?: string,
+    studyLang?: StudyLanguage
+  ) => Promise<void>;
   onCancelSwitch?: () => void;
 }
 
@@ -66,6 +73,7 @@ export function AuthOnboarding({
   const [signupTrack, setSignupTrack] = useState<TrackId>('thanawiya');
   const signupTrackDef = EDUCATIONAL_TRACKS.find((tr) => tr.id === signupTrack) || EDUCATIONAL_TRACKS[0];
   const [signupGrade, setSignupGrade] = useState<string>(signupTrackDef.grades[0].id);
+  const [signupStudyLang, setSignupStudyLang] = useState<StudyLanguage>(lang);
 
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
@@ -81,6 +89,9 @@ export function AuthOnboarding({
   const currentTrackDef = EDUCATIONAL_TRACKS.find((tr) => tr.id === selectedTrack) || EDUCATIONAL_TRACKS[0];
   const [selectedGrade, setSelectedGrade] = useState<string>(
     userProfile?.grade || currentTrackDef.grades[0].id
+  );
+  const [selectedStudyLang, setSelectedStudyLang] = useState<StudyLanguage>(
+    userProfile?.studyLang || (selectedTrack === 'american' ? 'bilingual' : lang)
   );
 
   const switchAuthTab = (tab: 'signin' | 'signup' | 'reset') => {
@@ -194,6 +205,7 @@ export function AuthOnboarding({
         password,
         track: signupTrack,
         grade: signupGrade,
+        studyLang: signupStudyLang,
       });
     } catch (err: unknown) {
       const code = extractFirebaseAuthCode(err);
@@ -237,7 +249,7 @@ export function AuthOnboarding({
     setBusy(true);
     setErrorMsg('');
     try {
-      await onSaveTrackSelection(selectedTrack, selectedGrade, editDisplayName);
+      await onSaveTrackSelection(selectedTrack, selectedGrade, editDisplayName, selectedStudyLang);
     } catch (err: unknown) {
       setErrorMsg(
         lang === 'ar'
@@ -571,6 +583,7 @@ export function AuthOnboarding({
                           setSignupTrack(nextTrack);
                           const def = EDUCATIONAL_TRACKS.find((tr) => tr.id === nextTrack) || EDUCATIONAL_TRACKS[0];
                           setSignupGrade(def.grades[0].id);
+                          if (nextTrack === 'american') setSignupStudyLang('bilingual');
                         }}
                         className="w-full px-3 py-2.5 rounded-xl glass-input text-xs font-medium"
                       >
@@ -596,6 +609,18 @@ export function AuthOnboarding({
                         ))}
                       </select>
                     </div>
+                  </div>
+
+                  <div className="rounded-xl glass-subcard p-3 flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-xs font-medium text-slate-600 dark:text-slate-300">
+                      {t.common.studyLangLabel}
+                    </span>
+                    <StudyLanguageSwitcher
+                      value={signupStudyLang}
+                      onChange={setSignupStudyLang}
+                      uiLang={lang}
+                      compact
+                    />
                   </div>
 
                   {errorMsg && (
@@ -710,6 +735,7 @@ export function AuthOnboarding({
                     onClick={() => {
                       setSelectedTrack(tr.id);
                       setSelectedGrade(tr.grades[0].id);
+                      if (tr.id === 'american') setSelectedStudyLang('bilingual');
                     }}
                     className={`text-start rounded-2xl glass-card-interactive overflow-hidden flex flex-col ${
                       isSelected
@@ -751,7 +777,7 @@ export function AuthOnboarding({
               })}
             </div>
 
-            {/* Grade & Profile Selector */}
+            {/* Grade, Study Language & Profile Selector */}
             <div className="rounded-2xl glass-card p-6 space-y-5">
               <div>
                 <label className="block text-sm font-semibold mb-1.5">
@@ -784,6 +810,26 @@ export function AuthOnboarding({
                     </button>
                   ))}
                 </div>
+              </div>
+
+              <div className="pt-2 border-t border-slate-200/70 dark:border-white/10 flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-semibold">{t.common.studyLangLabel}</p>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    {selectedTrack === 'american'
+                      ? lang === 'ar'
+                        ? 'نظام American Diploma يدعم العربية والإنجليزية أو كلتيهما معًا بالكامل.'
+                        : 'American Diploma fully supports Arabic, English, or Bilingual dual study.'
+                      : lang === 'ar'
+                        ? 'يمكنك تغيير لغة الدراسة في أي وقت دون فقدان تقدمك.'
+                        : 'You can change your study language anytime without losing progress.'}
+                  </p>
+                </div>
+                <StudyLanguageSwitcher
+                  value={selectedStudyLang}
+                  onChange={setSelectedStudyLang}
+                  uiLang={lang}
+                />
               </div>
 
               {errorMsg && (

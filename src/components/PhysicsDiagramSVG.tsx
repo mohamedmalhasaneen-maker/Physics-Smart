@@ -1,18 +1,22 @@
-import { Language } from '../types/physics';
+import { Language, StudyLanguage } from '../types/physics';
+import { pickStudyText } from '../lib/bilingual';
 
 export function PhysicsDiagramSVG({
   type,
   lang,
+  studyLang,
 }: {
   type: 'kinematics' | 'circuit' | 'wave' | 'optics' | 'magnetism' | 'freefall' | 'newton';
   lang: Language;
+  studyLang?: StudyLanguage;
 }) {
+  const effectiveLang = studyLang || lang;
   return (
     <div className="my-4 rounded-2xl glass-card p-3 sm:p-4">
       <div className="rounded-xl border border-slate-800/80 bg-[#060D20] p-3.5 text-slate-100">
         <div className="mb-2 flex items-center justify-between text-xs text-cyan-300">
-          <span>
-            {lang === 'ar' ? 'رسم علمي توضيحي' : 'Scientific Illustration'}
+          <span dir="auto">
+            {pickStudyText('رسم علمي توضيحي', 'Scientific Illustration', effectiveLang)}
           </span>
           <span className="font-mono-num text-slate-400">{type.toUpperCase()}</span>
         </div>

@@ -1,15 +1,18 @@
 import React, { useState } from 'react';
-import { FormulaItem, Language } from '../types/physics';
+import { FormulaItem, Language, StudyLanguage } from '../types/physics';
 import { LatexBlock, LatexInline } from './MathRenderer';
+import { BilingualTextBlock, BilingualTitle } from './BilingualBlock';
+import { pickStudyText } from '../lib/bilingual';
 import { Search, ArrowLeft, ArrowRight } from 'lucide-react';
 
 interface FormulaLibraryViewProps {
   lang: Language;
+  studyLang: StudyLanguage;
   formulas: FormulaItem[];
   onOpenLesson: (lessonId: string) => void;
 }
 
-export function FormulaLibraryView({ lang, formulas, onOpenLesson }: FormulaLibraryViewProps) {
+export function FormulaLibraryView({ lang, studyLang, formulas, onOpenLesson }: FormulaLibraryViewProps) {
   const [search, setSearch] = useState('');
   const [cat, setCat] = useState<string>('all');
 
@@ -92,7 +95,13 @@ export function FormulaLibraryView({ lang, formulas, onOpenLesson }: FormulaLibr
             className="rounded-2xl glass-card-interactive p-6 space-y-4"
           >
             <div>
-              <h2 className="text-lg font-bold">{lang === 'ar' ? f.nameAr : f.nameEn}</h2>
+              <BilingualTitle
+                ar={f.nameAr}
+                en={f.nameEn}
+                studyLang={studyLang}
+                as="h2"
+                className="text-lg font-bold"
+              />
               <LatexBlock latex={f.latex} />
             </div>
 
@@ -102,39 +111,51 @@ export function FormulaLibraryView({ lang, formulas, onOpenLesson }: FormulaLibr
                 {f.symbols.map((s, i) => (
                   <div key={i} className="flex items-center gap-2">
                     <LatexInline latex={s.symbol} className="font-semibold text-blue-600 dark:text-cyan-400" />
-                    <span>
-                      {lang === 'ar' ? s.nameAr : s.nameEn} ({lang === 'ar' ? s.unitAr : s.unitEn})
+                    <span dir="auto">
+                      {pickStudyText(s.nameAr, s.nameEn, studyLang)} ({pickStudyText(s.unitAr, s.unitEn, studyLang)})
                     </span>
                   </div>
                 ))}
               </div>
             </div>
 
-            <div className="text-xs space-y-2 pt-2.5 border-t border-slate-200/70 dark:border-white/10">
-              <p>
-                <strong className="text-slate-800 dark:text-slate-200">
-                  {lang === 'ar' ? 'شروط الاستخدام: ' : 'Validity Conditions: '}
+            <div className="text-xs space-y-2.5 pt-2.5 border-t border-slate-200/70 dark:border-white/10">
+              <div className="space-y-1">
+                <strong className="block text-slate-800 dark:text-slate-200">
+                  {lang === 'ar' ? 'شروط الاستخدام:' : 'Validity Conditions:'}
                 </strong>
-                <span className="text-slate-600 dark:text-slate-300">
-                  {lang === 'ar' ? f.conditionsAr : f.conditionsEn}
-                </span>
-              </p>
-              <p>
-                <strong className="text-slate-800 dark:text-slate-200">
-                  {lang === 'ar' ? 'مثال محلول: ' : 'Worked Example: '}
+                <BilingualTextBlock
+                  ar={f.conditionsAr}
+                  en={f.conditionsEn}
+                  studyLang={studyLang}
+                  rich
+                  className="text-slate-600 dark:text-slate-300"
+                />
+              </div>
+              <div className="space-y-1">
+                <strong className="block text-slate-800 dark:text-slate-200">
+                  {lang === 'ar' ? 'مثال محلول:' : 'Worked Example:'}
                 </strong>
-                <span className="text-slate-600 dark:text-slate-300" dir="auto">
-                  {lang === 'ar' ? f.exampleAr : f.exampleEn}
-                </span>
-              </p>
-              <p>
-                <strong className="text-rose-600 dark:text-rose-400">
-                  {lang === 'ar' ? 'خطأ شائع: ' : 'Common Mistake: '}
+                <BilingualTextBlock
+                  ar={f.exampleAr}
+                  en={f.exampleEn}
+                  studyLang={studyLang}
+                  rich
+                  className="text-slate-600 dark:text-slate-300"
+                />
+              </div>
+              <div className="space-y-1">
+                <strong className="block text-rose-600 dark:text-rose-400">
+                  {lang === 'ar' ? 'خطأ شائع:' : 'Common Mistake:'}
                 </strong>
-                <span className="text-slate-600 dark:text-slate-300">
-                  {lang === 'ar' ? f.commonErrorsAr : f.commonErrorsEn}
-                </span>
-              </p>
+                <BilingualTextBlock
+                  ar={f.commonErrorsAr}
+                  en={f.commonErrorsEn}
+                  studyLang={studyLang}
+                  rich
+                  className="text-slate-600 dark:text-slate-300"
+                />
+              </div>
             </div>
 
             {f.linkedLessonIds.length > 0 && (

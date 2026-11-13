@@ -4,10 +4,13 @@ import {
   Lesson,
   LessonProgress,
   QuestionItem,
+  StudyLanguage,
   UserProfile,
 } from '../types/physics';
-import { getGradeLabel, getTrackById } from '../data/tracks';
-import { LatexBlock, LatexInline, RichPhysicsText } from './MathRenderer';
+import { getGradeLabel, getTrackLabel } from '../data/tracks';
+import { mergeBilingualOptions, pickStudyText } from '../lib/bilingual';
+import { BilingualTextBlock, BilingualTitle, StudyLanguageSwitcher } from './BilingualBlock';
+import { LatexBlock, LatexInline } from './MathRenderer';
 import { PhysicsDiagramSVG } from './PhysicsDiagramSVG';
 import {
   AlertTriangle,
@@ -24,6 +27,8 @@ import {
 
 interface CurriculumViewProps {
   lang: Language;
+  studyLang: StudyLanguage;
+  onChangeStudyLang: (next: StudyLanguage) => void;
   profile: UserProfile;
   lessons: Lesson[];
   questions: QuestionItem[];
@@ -36,6 +41,8 @@ interface CurriculumViewProps {
 
 export function CurriculumView({
   lang,
+  studyLang,
+  onChangeStudyLang,
   profile,
   lessons,
   questions,
@@ -45,8 +52,8 @@ export function CurriculumView({
   onSaveProgress,
   onAskTutorWithLesson,
 }: CurriculumViewProps) {
-  const trackInfo = getTrackById(profile.track);
-  const gradeLabel = getGradeLabel(profile.track, profile.grade, lang);
+  const trackLabel = getTrackLabel(profile.track, studyLang);
+  const gradeLabel = getGradeLabel(profile.track, profile.grade, studyLang);
   // Strict Track + Grade Isolation
   const scopedLessons = lessons
     .filter((l) => l.track === profile.track && l.grade === profile.grade)
@@ -71,13 +78,18 @@ export function CurriculumView({
 
   if (!activeLesson) {
     // Group by Term -> Unit
-    const unitsMap = new Map<string, { term: string; unitTitle: string; items: Lesson[] }>();
+    const unitsMap = new Map<
+      string,
+      { termAr: string; termEn: string; unitTitleAr: string; unitTitleEn: string; items: Lesson[] }
+    >();
     for (const l of scopedLessons) {
       const key = `${l.termEn}::${l.unitId}`;
       if (!unitsMap.has(key)) {
         unitsMap.set(key, {
-          term: lang === 'ar' ? l.termAr : l.termEn,
-          unitTitle: lang === 'ar' ? l.unitTitleAr : l.unitTitleEn,
+          termAr: l.termAr,
+          termEn: l.termEn,
+          unitTitleAr: l.unitTitleAr,
+          unitTitleEn: l.unitTitleEn,
           items: [],
         });
       }
@@ -86,30 +98,43 @@ export function CurriculumView({
 
     return (
       <div className="space-y-6">
-        <div className="rounded-2xl glass-card p-6">
-          <div className="flex flex-wrap items-center gap-2 text-xs text-blue-600 dark:text-cyan-400 mb-1">
-            <span>{lang === 'ar' ? trackInfo?.nameAr : trackInfo?.nameEn}</span>
-            <span aria-hidden="true">·</span>
-            <span>{gradeLabel}</span>
+        <div className="rounded-2xl glass-card p-6 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+          <div>
+            <div className="flex flex-wrap items-center gap-2 text-xs text-blue-600 dark:text-cyan-400 mb-1">
+              <span>{trackLabel}</span>
+              <span aria-hidden="true">·</span>
+              <span>{gradeLabel}</span>
+            </div>
+            <h1 className="text-2xl font-bold">
+              {lang === 'ar' ? 'مكتبة المناهج والدروس التفصيلية' : 'Structured Curriculum & Lessons Library'}
+            </h1>
+            <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">
+              {lang === 'ar'
+                ? 'محتوى مخصص بالكامل لنظامك وصفك الدراسي. كل درس مقسم إلى 15 قسمًا علميًا متكاملًا.'
+                : 'Strictly scoped to your educational track and grade. Each lesson contains 15 comprehensive pedagogical sections.'}
+            </p>
           </div>
-          <h1 className="text-2xl font-bold">
-            {lang === 'ar' ? 'مكتبة المناهج والدروس التفصيلية' : 'Structured Curriculum & Lessons Library'}
-          </h1>
-          <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">
-            {lang === 'ar'
-              ? 'محتوى مخصص بالكامل لنظامك وصفك الدراسي. كل درس مقسم إلى 15 قسمًا علميًا متكاملًا.'
-              : 'Strictly scoped to your educational track and grade. Each lesson contains 15 comprehensive pedagogical sections.'}
-          </p>
+          <StudyLanguageSwitcher
+            value={studyLang}
+            onChange={onChangeStudyLang}
+            uiLang={lang}
+            label={lang === 'ar' ? 'لغة الدرس:' : 'Study Language:'}
+          />
         </div>
 
         {Array.from(unitsMap.entries()).map(([key, group]) => (
-          <div
-            key={key}
-            className="rounded-2xl glass-card p-6 space-y-4"
-          >
+          <div key={key} className="rounded-2xl glass-card p-6 space-y-4">
             <div>
-              <p className="text-xs text-slate-500 dark:text-slate-400">{group.term}</p>
-              <h2 className="text-lg font-bold mt-0.5">{group.unitTitle}</h2>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                {pickStudyText(group.termAr, group.termEn, studyLang)}
+              </p>
+              <BilingualTitle
+                ar={group.unitTitleAr}
+                en={group.unitTitleEn}
+                studyLang={studyLang}
+                as="h2"
+                className="text-lg font-bold mt-0.5"
+              />
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -133,14 +158,18 @@ export function CurriculumView({
                           </span>
                         )}
                       </div>
-                      <h3 className="text-base font-bold">
-                        {lang === 'ar' ? lesson.titleAr : lesson.titleEn}
-                      </h3>
+                      <BilingualTitle
+                        ar={lesson.titleAr}
+                        en={lesson.titleEn}
+                        studyLang={studyLang}
+                        as="h3"
+                        className="text-base font-bold"
+                      />
                       <p className="text-xs text-slate-600 dark:text-slate-400 line-clamp-2">
-                        {lang === 'ar' ? lesson.introAr : lesson.introEn}
+                        {pickStudyText(lesson.introAr, lesson.introEn, studyLang)}
                       </p>
                       <p className="text-[11px] text-slate-500 dark:text-slate-400/80">
-                        {lang === 'ar' ? lesson.sourceLabelAr : lesson.sourceLabelEn}
+                        {pickStudyText(lesson.sourceLabelAr, lesson.sourceLabelEn, studyLang)}
                       </p>
                     </div>
 
@@ -150,7 +179,7 @@ export function CurriculumView({
                         setQuizSubmitted(false);
                         onSelectLesson(lesson.id);
                       }}
-                      className="w-full py-2.5 px-4 rounded-xl glass-btn-primary text-xs font-semibold"
+                      className="w-full py-2.5 px-4 rounded-xl glass-btn-primary text-xs font-semibold cursor-pointer"
                     >
                       {prog?.isCompleted
                         ? lang === 'ar'
@@ -207,6 +236,13 @@ export function CurriculumView({
     );
   };
 
+  const objectiveLen = Math.max(activeLesson.objectivesAr.length, activeLesson.objectivesEn.length);
+  const conceptLen = Math.max(activeLesson.conceptsAr.length, activeLesson.conceptsEn.length);
+  const everydayLen = Math.max(activeLesson.everydayExamplesAr.length, activeLesson.everydayExamplesEn.length);
+  const mistakesLen = Math.max(activeLesson.commonMistakesAr.length, activeLesson.commonMistakesEn.length);
+  const practicalLen = Math.max(activeLesson.practicalAppsAr.length, activeLesson.practicalAppsEn.length);
+  const summaryLen = Math.max(activeLesson.summaryAr.length, activeLesson.summaryEn.length);
+
   return (
     <div className="space-y-6 max-w-5xl mx-auto">
       {/* Lesson Header */}
@@ -214,29 +250,42 @@ export function CurriculumView({
         <div className="flex flex-wrap items-center justify-between gap-3">
           <button
             onClick={() => onSelectLesson(null)}
-            className="text-xs font-medium text-blue-600 dark:text-cyan-400 hover:underline flex items-center gap-1"
+            className="text-xs font-medium text-blue-600 dark:text-cyan-400 hover:underline flex items-center gap-1 cursor-pointer"
           >
             <BackArrow className="w-4 h-4" />
             {lang === 'ar' ? 'العودة إلى قائمة الدروس' : 'Back to Curriculum'}
           </button>
 
-          <button
-            onClick={() => onAskTutorWithLesson(activeLesson)}
-            className="px-3.5 py-2 rounded-xl glass-btn-secondary text-blue-600 dark:text-cyan-300 text-xs font-semibold flex items-center gap-1.5"
-          >
-            <Bot className="w-4 h-4" />
-            {lang === 'ar' ? 'اشرح لي هذا الدرس بالذكاء الاصطناعي' : 'Discuss Lesson with AI Tutor'}
-          </button>
+          <div className="flex flex-wrap items-center gap-2.5">
+            <StudyLanguageSwitcher
+              value={studyLang}
+              onChange={onChangeStudyLang}
+              uiLang={lang}
+              compact
+            />
+            <button
+              onClick={() => onAskTutorWithLesson(activeLesson)}
+              className="px-3.5 py-2 rounded-xl glass-btn-secondary text-blue-600 dark:text-cyan-300 text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+            >
+              <Bot className="w-4 h-4" />
+              {lang === 'ar' ? 'اشرح لي هذا الدرس بالذكاء الاصطناعي' : 'Discuss Lesson with AI Tutor'}
+            </button>
+          </div>
         </div>
 
         <div>
           <p className="text-xs text-slate-500 dark:text-slate-400">
-            {lang === 'ar' ? activeLesson.unitTitleAr : activeLesson.unitTitleEn} ·{' '}
-            {lang === 'ar' ? activeLesson.sourceLabelAr : activeLesson.sourceLabelEn}
+            {pickStudyText(activeLesson.unitTitleAr, activeLesson.unitTitleEn, studyLang)} ·{' '}
+            {pickStudyText(activeLesson.sourceLabelAr, activeLesson.sourceLabelEn, studyLang)}
           </p>
-          <h1 className="text-2xl sm:text-3xl font-bold mt-1">
-            {lang === 'ar' ? activeLesson.titleAr : activeLesson.titleEn}
-          </h1>
+          <BilingualTitle
+            ar={activeLesson.titleAr}
+            en={activeLesson.titleEn}
+            studyLang={studyLang}
+            as="h1"
+            className="text-2xl sm:text-3xl font-bold mt-1"
+            subClassName="text-sm font-medium text-cyan-600 dark:text-cyan-300 mt-1"
+          />
         </div>
 
         {activeLesson.resourceUrls && (activeLesson.resourceUrls.pdf || activeLesson.resourceUrls.video) && (
@@ -275,16 +324,26 @@ export function CurriculumView({
           </span>
           {lang === 'ar' ? '1. مقدمة وأهداف الدرس' : '1. Introduction & Learning Objectives'}
         </h2>
-        <p className="text-sm sm:text-[15px] leading-7 text-slate-700 dark:text-slate-300">
-          {lang === 'ar' ? activeLesson.introAr : activeLesson.introEn}
-        </p>
+        <BilingualTextBlock
+          ar={activeLesson.introAr}
+          en={activeLesson.introEn}
+          studyLang={studyLang}
+          className="text-sm sm:text-[15px] leading-7 text-slate-700 dark:text-slate-300"
+        />
         <div className="pt-2">
           <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 mb-2">
             {lang === 'ar' ? 'بنهاية هذا الدرس ستكون قادرًا على:' : 'By the end of this lesson you will be able to:'}
           </p>
-          <ul className="space-y-1.5 text-sm text-slate-700 dark:text-slate-300 list-disc list-inside">
-            {(lang === 'ar' ? activeLesson.objectivesAr : activeLesson.objectivesEn).map((obj, idx) => (
-              <li key={idx}>{obj}</li>
+          <ul className="space-y-2 text-sm text-slate-700 dark:text-slate-300">
+            {Array.from({ length: objectiveLen }).map((_, idx) => (
+              <li key={idx} className="rounded-xl glass-subcard px-3.5 py-2">
+                <BilingualTextBlock
+                  ar={activeLesson.objectivesAr[idx] || activeLesson.objectivesEn[idx] || ''}
+                  en={activeLesson.objectivesEn[idx] || activeLesson.objectivesAr[idx] || ''}
+                  studyLang={studyLang}
+                  className="text-sm text-slate-700 dark:text-slate-200"
+                />
+              </li>
             ))}
           </ul>
         </div>
@@ -294,18 +353,22 @@ export function CurriculumView({
       {activeLesson.parts.map((part, idx) => {
         const isPartDone = completedParts.includes(part.id);
         const chosenCheck = checkAnswers[part.id];
+        const checkOptions = part.checkQuestion
+          ? mergeBilingualOptions(part.checkQuestion.optionsAr, part.checkQuestion.optionsEn, studyLang)
+          : [];
         return (
-          <section
-            key={part.id}
-            className="rounded-2xl glass-card p-6 space-y-4"
-          >
-            <div className="flex items-center justify-between gap-4">
-              <h2 className="text-lg font-bold">
-                {lang === 'ar' ? part.titleAr : part.titleEn}
-              </h2>
+          <section key={part.id} className="rounded-2xl glass-card p-6 space-y-4">
+            <div className="flex items-start justify-between gap-4">
+              <BilingualTitle
+                ar={part.titleAr}
+                en={part.titleEn}
+                studyLang={studyLang}
+                as="h2"
+                className="text-lg font-bold"
+              />
               <button
                 onClick={() => togglePartComplete(part.id)}
-                className={`px-3 py-1.5 rounded-xl text-xs font-medium transition-all flex items-center gap-1.5 ${
+                className={`px-3 py-1.5 rounded-xl text-xs font-medium transition-all flex items-center gap-1.5 shrink-0 cursor-pointer ${
                   isPartDone
                     ? 'bg-emerald-500/15 border border-emerald-500/30 text-emerald-600 dark:text-emerald-300'
                     : 'glass-btn-secondary'
@@ -322,20 +385,24 @@ export function CurriculumView({
               </button>
             </div>
 
-            <RichPhysicsText
-              text={lang === 'ar' ? part.explanationAr : part.explanationEn}
+            <BilingualTextBlock
+              ar={part.explanationAr}
+              en={part.explanationEn}
+              studyLang={studyLang}
+              rich
+              collapsibleTranslation={studyLang === 'bilingual'}
               className="text-slate-700 dark:text-slate-300"
             />
 
             {part.equationsLatex && part.equationsLatex.length > 0 && (
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3" dir="ltr">
                 {part.equationsLatex.map((eq, eIdx) => (
                   <LatexBlock key={eIdx} latex={eq} />
                 ))}
               </div>
             )}
 
-            {part.diagramType && <PhysicsDiagramSVG type={part.diagramType} lang={lang} />}
+            {part.diagramType && <PhysicsDiagramSVG type={part.diagramType} lang={lang} studyLang={studyLang} />}
 
             {/* Interactive check question after part */}
             {part.checkQuestion && (
@@ -344,18 +411,22 @@ export function CurriculumView({
                   <HelpCircle className="w-4 h-4" />
                   {lang === 'ar' ? `تحقق من فهمك (الجزء ${idx + 1})` : `Quick Check (Part ${idx + 1})`}
                 </p>
-                <p className="text-sm font-medium">
-                  {lang === 'ar' ? part.checkQuestion.questionAr : part.checkQuestion.questionEn}
-                </p>
+                <BilingualTextBlock
+                  ar={part.checkQuestion.questionAr}
+                  en={part.checkQuestion.questionEn}
+                  studyLang={studyLang}
+                  rich
+                  className="text-sm font-medium"
+                />
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  {(lang === 'ar' ? part.checkQuestion.optionsAr : part.checkQuestion.optionsEn).map((opt, oIdx) => {
+                  {checkOptions.map((opt, oIdx) => {
                     const isPicked = chosenCheck === oIdx;
                     const isRight = part.checkQuestion!.correctIndex === oIdx;
                     return (
                       <button
                         key={oIdx}
                         onClick={() => setCheckAnswers((prev) => ({ ...prev, [part.id]: oIdx }))}
-                        className={`p-2.5 rounded-xl border text-start text-xs font-medium transition-all ${
+                        className={`p-2.5 rounded-xl border text-start text-xs font-medium transition-all cursor-pointer ${
                           chosenCheck === undefined
                             ? 'glass-btn-secondary'
                             : isRight
@@ -365,15 +436,26 @@ export function CurriculumView({
                             : 'border-slate-200/40 dark:border-white/10 opacity-60'
                         }`}
                       >
-                        {opt}
+                        {studyLang === 'bilingual' && opt.ar !== opt.en ? (
+                          <div className="space-y-0.5">
+                            <p dir="rtl">{opt.ar}</p>
+                            <p dir="ltr" className="text-[11px] opacity-80">{opt.en}</p>
+                          </div>
+                        ) : (
+                          <span>{opt.single}</span>
+                        )}
                       </button>
                     );
                   })}
                 </div>
                 {chosenCheck !== undefined && (
-                  <p className="text-xs text-slate-600 dark:text-slate-300 pt-1">
-                    {lang === 'ar' ? part.checkQuestion.explanationAr : part.checkQuestion.explanationEn}
-                  </p>
+                  <BilingualTextBlock
+                    ar={part.checkQuestion.explanationAr}
+                    en={part.checkQuestion.explanationEn}
+                    studyLang={studyLang}
+                    rich
+                    className="text-xs text-slate-600 dark:text-slate-300 pt-1"
+                  />
                 )}
               </div>
             )}
@@ -387,12 +469,27 @@ export function CurriculumView({
           <h2 className="text-base font-bold">
             {lang === 'ar' ? 'المفاهيم والتعريفات الأساسية' : 'Key Concepts & Definitions'}
           </h2>
-          {(lang === 'ar' ? activeLesson.conceptsAr : activeLesson.conceptsEn).map((c, i) => (
-            <div key={i} className="pt-2.5 border-t border-slate-200/70 dark:border-white/10 first:border-0 first:pt-0">
-              <p className="text-sm font-semibold text-blue-600 dark:text-cyan-400">{c.title}</p>
-              <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-300 mt-1">{c.body}</p>
-            </div>
-          ))}
+          {Array.from({ length: conceptLen }).map((_, i) => {
+            const cAr = activeLesson.conceptsAr[i];
+            const cEn = activeLesson.conceptsEn[i];
+            return (
+              <div key={i} className="pt-2.5 border-t border-slate-200/70 dark:border-white/10 first:border-0 first:pt-0 space-y-1">
+                <BilingualTitle
+                  ar={cAr?.title || cEn?.title || ''}
+                  en={cEn?.title || cAr?.title || ''}
+                  studyLang={studyLang}
+                  as="p"
+                  className="text-sm font-semibold text-blue-600 dark:text-cyan-400"
+                />
+                <BilingualTextBlock
+                  ar={cAr?.body || cEn?.body || ''}
+                  en={cEn?.body || cAr?.body || ''}
+                  studyLang={studyLang}
+                  className="text-xs sm:text-sm text-slate-600 dark:text-slate-300"
+                />
+              </div>
+            );
+          })}
         </section>
 
         <section className="rounded-2xl glass-card p-6 space-y-3">
@@ -400,13 +497,17 @@ export function CurriculumView({
             {lang === 'ar' ? 'المصطلحات العلمية (عربي / English)' : 'Bilingual Scientific Terminology'}
           </h2>
           {activeLesson.terms.map((term, i) => (
-            <div key={i} className="pt-2.5 border-t border-slate-200/70 dark:border-white/10 first:border-0 first:pt-0">
+            <div key={i} className="pt-2.5 border-t border-slate-200/70 dark:border-white/10 first:border-0 first:pt-0 space-y-1">
               <p className="text-sm font-semibold">
-                {term.termAr} · <span dir="ltr" className="text-blue-600 dark:text-cyan-400">{term.termEn}</span>
+                <span dir="rtl">{term.termAr}</span> ·{' '}
+                <span dir="ltr" className="text-blue-600 dark:text-cyan-400">{term.termEn}</span>
               </p>
-              <p className="text-xs text-slate-600 dark:text-slate-300 mt-0.5">
-                {lang === 'ar' ? term.definitionAr : term.definitionEn}
-              </p>
+              <BilingualTextBlock
+                ar={term.definitionAr}
+                en={term.definitionEn}
+                studyLang={studyLang}
+                className="text-xs text-slate-600 dark:text-slate-300"
+              />
             </div>
           ))}
         </section>
@@ -420,12 +521,23 @@ export function CurriculumView({
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {activeLesson.lawsLatex.map((law, idx) => (
-            <div key={idx} className="rounded-xl glass-subcard p-4">
-              <p className="text-sm font-semibold">{lang === 'ar' ? law.nameAr : law.nameEn}</p>
-              <LatexBlock latex={law.latex} />
-              <p className="text-xs text-slate-500 dark:text-slate-400">
-                {lang === 'ar' ? law.noteAr : law.noteEn}
-              </p>
+            <div key={idx} className="rounded-xl glass-subcard p-4 space-y-2">
+              <BilingualTitle
+                ar={law.nameAr}
+                en={law.nameEn}
+                studyLang={studyLang}
+                as="p"
+                className="text-sm font-semibold"
+              />
+              <div dir="ltr">
+                <LatexBlock latex={law.latex} />
+              </div>
+              <BilingualTextBlock
+                ar={law.noteAr}
+                en={law.noteEn}
+                studyLang={studyLang}
+                className="text-xs text-slate-500 dark:text-slate-400"
+              />
             </div>
           ))}
         </div>
@@ -442,12 +554,12 @@ export function CurriculumView({
             <tbody className="divide-y divide-slate-200/60 dark:divide-white/10">
               {activeLesson.symbolsTable.map((row, idx) => (
                 <tr key={idx}>
-                  <td className="py-2 px-3 font-mono-num">
+                  <td className="py-2 px-3 font-mono-num" dir="ltr">
                     <LatexInline latex={row.symbol} />
                   </td>
-                  <td className="py-2 px-3">{lang === 'ar' ? row.nameAr : row.nameEn}</td>
-                  <td className="py-2 px-3 font-mono-num text-blue-600 dark:text-cyan-400">
-                    {lang === 'ar' ? row.unitAr : row.unitEn}
+                  <td className="py-2 px-3">{pickStudyText(row.nameAr, row.nameEn, studyLang)}</td>
+                  <td className="py-2 px-3 font-mono-num text-blue-600 dark:text-cyan-400" dir="ltr">
+                    {pickStudyText(row.unitAr, row.unitEn, studyLang)}
                   </td>
                 </tr>
               ))}
@@ -465,37 +577,75 @@ export function CurriculumView({
           {lang === 'ar' ? 'أمثلة من الحياة اليومية وأمثلة محلولة بالتفصيل' : 'Everyday Examples & Worked Solutions'}
         </h2>
 
-        <ul className="space-y-1.5 text-sm text-slate-700 dark:text-slate-300 list-disc list-inside">
-          {(lang === 'ar' ? activeLesson.everydayExamplesAr : activeLesson.everydayExamplesEn).map((ex, i) => (
-            <li key={i}>{ex}</li>
+        <ul className="space-y-2 text-sm text-slate-700 dark:text-slate-300">
+          {Array.from({ length: everydayLen }).map((_, i) => (
+            <li key={i} className="rounded-xl glass-subcard px-3.5 py-2">
+              <BilingualTextBlock
+                ar={activeLesson.everydayExamplesAr[i] || activeLesson.everydayExamplesEn[i] || ''}
+                en={activeLesson.everydayExamplesEn[i] || activeLesson.everydayExamplesAr[i] || ''}
+                studyLang={studyLang}
+                className="text-sm text-slate-700 dark:text-slate-200"
+              />
+            </li>
           ))}
         </ul>
 
-        {activeLesson.solvedExamples.map((ex) => (
-          <div key={ex.id} className="rounded-xl glass-subcard p-5 space-y-3">
-            <h3 className="text-base font-bold text-blue-600 dark:text-cyan-400">
-              {lang === 'ar' ? ex.titleAr : ex.titleEn}
-            </h3>
-            <p className="text-sm leading-relaxed">{lang === 'ar' ? ex.problemAr : ex.problemEn}</p>
-            <div className="text-xs space-y-1">
-              <p className="font-semibold text-slate-500 dark:text-slate-400">{lang === 'ar' ? 'المعطيات:' : 'Givens:'}</p>
-              <div className="flex flex-wrap gap-3 font-mono-num">
-                {(lang === 'ar' ? ex.givensAr : ex.givensEn).map((g, i) => (
-                  <span key={i}>{g}</span>
-                ))}
+        {activeLesson.solvedExamples.map((ex) => {
+          const givensLen = Math.max(ex.givensAr.length, ex.givensEn.length);
+          const stepsLen = Math.max(ex.stepsAr.length, ex.stepsEn.length);
+          return (
+            <div key={ex.id} className="rounded-xl glass-subcard p-5 space-y-3">
+              <BilingualTitle
+                ar={ex.titleAr}
+                en={ex.titleEn}
+                studyLang={studyLang}
+                as="h3"
+                className="text-base font-bold text-blue-600 dark:text-cyan-400"
+              />
+              <BilingualTextBlock
+                ar={ex.problemAr}
+                en={ex.problemEn}
+                studyLang={studyLang}
+                rich
+                className="text-sm leading-relaxed"
+              />
+              <div className="text-xs space-y-1">
+                <p className="font-semibold text-slate-500 dark:text-slate-400">
+                  {lang === 'ar' ? 'المعطيات:' : 'Givens:'}
+                </p>
+                <div className="flex flex-wrap gap-2 font-mono-num" dir="ltr">
+                  {Array.from({ length: givensLen }).map((_, i) => (
+                    <span key={i} className="px-2.5 py-1 rounded-lg bg-slate-900/10 dark:bg-white/[0.06]">
+                      {pickStudyText(ex.givensAr[i], ex.givensEn[i], studyLang)}
+                    </span>
+                  ))}
+                </div>
               </div>
+              <div dir="ltr">
+                <LatexBlock latex={ex.formulaLatex} />
+              </div>
+              <ol className="space-y-2 text-sm">
+                {Array.from({ length: stepsLen }).map((_, i) => (
+                  <li key={i} className="flex items-start gap-2">
+                    <span className="font-mono-num font-bold text-cyan-500 shrink-0">{i + 1}.</span>
+                    <div className="flex-1">
+                      <BilingualTextBlock
+                        ar={ex.stepsAr[i] || ex.stepsEn[i] || ''}
+                        en={ex.stepsEn[i] || ex.stepsAr[i] || ''}
+                        studyLang={studyLang}
+                        rich
+                        className="text-sm"
+                      />
+                    </div>
+                  </li>
+                ))}
+              </ol>
+              <p className="text-sm font-bold font-mono-num text-emerald-600 dark:text-emerald-400">
+                {lang === 'ar' ? 'الناتج النهائي:' : 'Final Answer:'} <span dir="ltr">{ex.finalAnswer}</span>
+              </p>
             </div>
-            <LatexBlock latex={ex.formulaLatex} />
-            <ol className="space-y-1.5 text-sm list-decimal list-inside">
-              {(lang === 'ar' ? ex.stepsAr : ex.stepsEn).map((s, i) => (
-                <li key={i}>{s}</li>
-              ))}
-            </ol>
-            <p className="text-sm font-bold font-mono-num text-emerald-600 dark:text-emerald-400">
-              {lang === 'ar' ? 'الناتج النهائي:' : 'Final Answer:'} <span dir="ltr">{ex.finalAnswer}</span>
-            </p>
-          </div>
-        ))}
+          );
+        })}
       </section>
 
       {/* Section 10: Graded Problems */}
@@ -509,25 +659,35 @@ export function CurriculumView({
               <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
                 <span className="font-semibold uppercase">{prob.level}</span>
               </div>
-              <p className="text-sm">{lang === 'ar' ? prob.problemAr : prob.problemEn}</p>
+              <BilingualTextBlock
+                ar={prob.problemAr}
+                en={prob.problemEn}
+                studyLang={studyLang}
+                rich
+                className="text-sm"
+              />
               <div className="flex flex-wrap gap-2 pt-1">
                 <button
                   onClick={() => setRevealedHints((p) => ({ ...p, [idx]: !p[idx] }))}
-                  className="px-3 py-1 rounded-lg glass-btn-secondary text-xs font-medium"
+                  className="px-3 py-1 rounded-lg glass-btn-secondary text-xs font-medium cursor-pointer"
                 >
                   {lang === 'ar' ? 'إظهار تلميح' : 'Show Hint'}
                 </button>
                 <button
                   onClick={() => setRevealedAnswers((p) => ({ ...p, [idx]: !p[idx] }))}
-                  className="px-3 py-1 rounded-lg glass-btn-primary text-xs font-medium"
+                  className="px-3 py-1 rounded-lg glass-btn-primary text-xs font-medium cursor-pointer"
                 >
                   {lang === 'ar' ? 'إظهار الإجابة' : 'Reveal Answer'}
                 </button>
               </div>
               {revealedHints[idx] && (
-                <p className="text-xs text-amber-600 dark:text-amber-400">
-                  {lang === 'ar' ? prob.hintAr : prob.hintEn}
-                </p>
+                <BilingualTextBlock
+                  ar={prob.hintAr}
+                  en={prob.hintEn}
+                  studyLang={studyLang}
+                  rich
+                  className="text-xs text-amber-600 dark:text-amber-400"
+                />
               )}
               {revealedAnswers[idx] && (
                 <p className="text-xs font-mono-num font-bold text-emerald-600 dark:text-emerald-400" dir="ltr">
@@ -548,12 +708,26 @@ export function CurriculumView({
             </span>
             {lang === 'ar' ? 'الأخطاء الشائعة وكيفية تجنبها' : 'Common Mistakes & Corrections'}
           </h2>
-          {(lang === 'ar' ? activeLesson.commonMistakesAr : activeLesson.commonMistakesEn).map((m, i) => (
-            <div key={i} className="text-sm space-y-1 pt-2.5 border-t border-slate-200/70 dark:border-white/10 first:border-0 first:pt-0">
-              <p className="text-rose-600 dark:text-rose-400 font-medium">{m.mistake}</p>
-              <p className="text-emerald-600 dark:text-emerald-400 text-xs">{m.correction}</p>
-            </div>
-          ))}
+          {Array.from({ length: mistakesLen }).map((_, i) => {
+            const mAr = activeLesson.commonMistakesAr[i];
+            const mEn = activeLesson.commonMistakesEn[i];
+            return (
+              <div key={i} className="text-sm space-y-1.5 pt-2.5 border-t border-slate-200/70 dark:border-white/10 first:border-0 first:pt-0">
+                <BilingualTextBlock
+                  ar={mAr?.mistake || mEn?.mistake || ''}
+                  en={mEn?.mistake || mAr?.mistake || ''}
+                  studyLang={studyLang}
+                  className="text-rose-600 dark:text-rose-400 font-medium"
+                />
+                <BilingualTextBlock
+                  ar={mAr?.correction || mEn?.correction || ''}
+                  en={mEn?.correction || mAr?.correction || ''}
+                  studyLang={studyLang}
+                  className="text-emerald-600 dark:text-emerald-400 text-xs"
+                />
+              </div>
+            );
+          })}
         </section>
 
         <section className="rounded-2xl glass-card p-6 space-y-4">
@@ -564,9 +738,16 @@ export function CurriculumView({
               </span>
               {lang === 'ar' ? 'تطبيقات عملية وتكنولوجية' : 'Practical Applications'}
             </h2>
-            <ul className="space-y-1 text-sm text-slate-600 dark:text-slate-300 list-disc list-inside">
-              {(lang === 'ar' ? activeLesson.practicalAppsAr : activeLesson.practicalAppsEn).map((a, i) => (
-                <li key={i}>{a}</li>
+            <ul className="space-y-2 text-sm text-slate-600 dark:text-slate-300">
+              {Array.from({ length: practicalLen }).map((_, i) => (
+                <li key={i} className="rounded-xl glass-subcard px-3 py-2">
+                  <BilingualTextBlock
+                    ar={activeLesson.practicalAppsAr[i] || activeLesson.practicalAppsEn[i] || ''}
+                    en={activeLesson.practicalAppsEn[i] || activeLesson.practicalAppsAr[i] || ''}
+                    studyLang={studyLang}
+                    className="text-xs sm:text-sm"
+                  />
+                </li>
               ))}
             </ul>
           </div>
@@ -575,9 +756,16 @@ export function CurriculumView({
             <h3 className="text-base font-bold mb-2">
               {lang === 'ar' ? 'الملخص الشامل للدرس' : 'Comprehensive Summary'}
             </h3>
-            <ul className="space-y-1 text-sm text-slate-600 dark:text-slate-300 list-disc list-inside">
-              {(lang === 'ar' ? activeLesson.summaryAr : activeLesson.summaryEn).map((s, i) => (
-                <li key={i}>{s}</li>
+            <ul className="space-y-2 text-sm text-slate-600 dark:text-slate-300">
+              {Array.from({ length: summaryLen }).map((_, i) => (
+                <li key={i} className="rounded-xl glass-subcard px-3 py-2">
+                  <BilingualTextBlock
+                    ar={activeLesson.summaryAr[i] || activeLesson.summaryEn[i] || ''}
+                    en={activeLesson.summaryEn[i] || activeLesson.summaryAr[i] || ''}
+                    studyLang={studyLang}
+                    className="text-xs sm:text-sm"
+                  />
+                </li>
               ))}
             </ul>
           </div>
@@ -596,56 +784,98 @@ export function CurriculumView({
           </p>
         ) : (
           <div className="space-y-4">
-            {lessonQuizQuestions.map((q, qIdx) => (
-              <div key={q.id} className="p-4 rounded-xl glass-subcard space-y-3">
-                <p className="text-sm font-semibold">
-                  {qIdx + 1}. {lang === 'ar' ? q.textAr : q.textEn}
-                </p>
-                {q.type === 'numerical' ? (
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="text"
-                      dir="ltr"
-                      disabled={quizSubmitted}
-                      placeholder={lang === 'ar' ? 'أدخل القيمة العددية...' : 'Enter numeric value...'}
-                      value={quizAnswers[q.id] || ''}
-                      onChange={(e) => setQuizAnswers((p) => ({ ...p, [q.id]: e.target.value }))}
-                      className="px-3 py-2 rounded-xl glass-input text-sm font-mono-num"
-                    />
-                    {q.numericUnit && <span className="text-xs font-mono-num text-slate-500">{q.numericUnit}</span>}
+            {lessonQuizQuestions.map((q, qIdx) => {
+              const mergedOpts = mergeBilingualOptions(q.optionsAr, q.optionsEn, studyLang);
+              const stepsLen = Math.max(q.stepsAr?.length || 0, q.stepsEn?.length || 0);
+              return (
+                <div key={q.id} className="p-4 rounded-xl glass-subcard space-y-3">
+                  <div className="flex items-start gap-2">
+                    <span className="text-sm font-bold text-cyan-500 font-mono-num">{qIdx + 1}.</span>
+                    <div className="flex-1">
+                      <BilingualTextBlock
+                        ar={q.textAr}
+                        en={q.textEn}
+                        studyLang={studyLang}
+                        rich
+                        className="text-sm font-semibold"
+                      />
+                    </div>
                   </div>
-                ) : (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    {(lang === 'ar' ? q.optionsAr || [] : q.optionsEn || []).map((opt, oIdx) => (
-                      <button
-                        key={oIdx}
+                  {q.type === 'numerical' ? (
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        dir="ltr"
                         disabled={quizSubmitted}
-                        onClick={() => setQuizAnswers((p) => ({ ...p, [q.id]: String(oIdx) }))}
-                        className={`p-2.5 rounded-xl border text-start text-xs font-medium transition-all ${
-                          quizAnswers[q.id] === String(oIdx)
-                            ? 'glass-btn-primary text-white'
-                            : 'glass-btn-secondary'
-                        }`}
-                      >
-                        {opt}
-                      </button>
-                    ))}
-                  </div>
-                )}
+                        placeholder={lang === 'ar' ? 'أدخل القيمة العددية...' : 'Enter numeric value...'}
+                        value={quizAnswers[q.id] || ''}
+                        onChange={(e) => setQuizAnswers((p) => ({ ...p, [q.id]: e.target.value }))}
+                        className="px-3 py-2 rounded-xl glass-input text-sm font-mono-num"
+                      />
+                      {q.numericUnit && <span className="text-xs font-mono-num text-slate-500">{q.numericUnit}</span>}
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      {mergedOpts.map((opt, oIdx) => (
+                        <button
+                          key={oIdx}
+                          disabled={quizSubmitted}
+                          onClick={() => setQuizAnswers((p) => ({ ...p, [q.id]: String(oIdx) }))}
+                          className={`p-2.5 rounded-xl border text-start text-xs font-medium transition-all cursor-pointer ${
+                            quizAnswers[q.id] === String(oIdx)
+                              ? 'glass-btn-primary text-white'
+                              : 'glass-btn-secondary'
+                          }`}
+                        >
+                          {studyLang === 'bilingual' && opt.ar !== opt.en ? (
+                            <div className="space-y-0.5">
+                              <p dir="rtl">{opt.ar}</p>
+                              <p dir="ltr" className="text-[11px] opacity-80">{opt.en}</p>
+                            </div>
+                          ) : (
+                            <span>{opt.single}</span>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  )}
 
-                {quizSubmitted && (
-                  <p className="text-xs text-slate-600 dark:text-slate-300 pt-1">
-                    {lang === 'ar' ? q.explanationAr : q.explanationEn}
-                  </p>
-                )}
-              </div>
-            ))}
+                  {quizSubmitted && (
+                    <div className="space-y-2 pt-1">
+                      <BilingualTextBlock
+                        ar={q.explanationAr}
+                        en={q.explanationEn}
+                        studyLang={studyLang}
+                        rich
+                        className="text-xs text-slate-600 dark:text-slate-300"
+                      />
+                      {stepsLen > 0 && (
+                        <ol className="space-y-1 text-xs text-slate-500 dark:text-slate-400">
+                          {Array.from({ length: stepsLen }).map((_, sIdx) => (
+                            <li key={sIdx} className="flex items-start gap-1.5">
+                              <span className="font-mono-num font-bold text-cyan-500">{sIdx + 1}.</span>
+                              <BilingualTextBlock
+                                ar={q.stepsAr?.[sIdx] || q.stepsEn?.[sIdx] || ''}
+                                en={q.stepsEn?.[sIdx] || q.stepsAr?.[sIdx] || ''}
+                                studyLang={studyLang}
+                                rich
+                                className="text-xs"
+                              />
+                            </li>
+                          ))}
+                        </ol>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
 
             <div className="flex items-center justify-between pt-2">
               <button
                 onClick={handleQuizSubmit}
                 disabled={quizSubmitted}
-                className="px-5 py-2.5 rounded-xl glass-btn-primary text-sm font-semibold disabled:opacity-60"
+                className="px-5 py-2.5 rounded-xl glass-btn-primary text-sm font-semibold disabled:opacity-60 cursor-pointer"
               >
                 {quizSubmitted
                   ? lang === 'ar'
@@ -662,3 +892,4 @@ export function CurriculumView({
     </div>
   );
 }
+

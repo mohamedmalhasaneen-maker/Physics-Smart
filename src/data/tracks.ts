@@ -53,19 +53,19 @@ export const EDUCATIONAL_TRACKS: TrackDefinition[] = [
   },
   {
     id: 'american',
-    nameAr: 'American Diploma',
+    nameAr: 'الدبلومة الأمريكية (American Diploma)',
     nameEn: 'American Diploma Physics',
-    subtitleAr: 'AP & High School Physics Courses',
-    subtitleEn: 'High School, Honors & AP Physics',
+    subtitleAr: 'مقررات المرحلة الثانوية و AP Physics — نظام ثنائي اللغة (عربي / English)',
+    subtitleEn: 'High School, Honors & AP Physics — Full Bilingual Support (AR / EN)',
     descriptionAr:
-      'دعم كامل للمصطلحات العلمية باللغة الإنجليزية والعربية، قوانين الفيزياء، ومسائل حسابية وتطبيقية وفق المقررات الأمريكية.',
+      'نظام تعليمي ثنائي اللغة بالكامل: شروحات عربية وإنجليزية، مصطلحات علمية متقابلة، قوانين الفيزياء، ومسائل وبنك أسئلة واختبارات بكل من العربية والإنجليزية أو معًا.',
     descriptionEn:
-      'Full English & bilingual scientific terminology, calculus/algebra-based physics laws, AP-style problems, and inquiry labs.',
+      'Complete bilingual system: Arabic & English explanations, paired scientific terminology, physics laws, AP-style problems, question bank, and exams in Arabic, English, or Bilingual mode.',
     image: '/src/assets/images/track_electromagnetism_lab_1794579389569.jpg',
     grades: [
-      { id: 'am_hs', labelAr: 'High School Physics (Grade 10-11)', labelEn: 'High School Physics (Grade 10-11)' },
-      { id: 'am_ap1', labelAr: 'AP Physics 1 (Algebra-Based)', labelEn: 'AP Physics 1 (Algebra-Based)' },
-      { id: 'am_ap2', labelAr: 'AP Physics 2 / Electromagnetism', labelEn: 'AP Physics 2 / Electromagnetism' },
+      { id: 'am_hs', labelAr: 'فيزياء المرحلة الثانوية الأمريكية (الصف 10-11) · High School Physics', labelEn: 'High School Physics (Grade 10-11)' },
+      { id: 'am_ap1', labelAr: 'فيزياء AP 1 (القائمة على الجبر) · AP Physics 1', labelEn: 'AP Physics 1 (Algebra-Based)' },
+      { id: 'am_ap2', labelAr: 'فيزياء AP 2 والكهرومغناطيسية · AP Physics 2', labelEn: 'AP Physics 2 / Electromagnetism' },
     ],
   },
 ];
@@ -74,9 +74,21 @@ export function getTrackById(trackId: string) {
   return EDUCATIONAL_TRACKS.find((t) => t.id === trackId);
 }
 
-export function getGradeLabel(trackId: string, gradeId: string, lang: 'ar' | 'en') {
+export function getTrackLabel(trackId: string, lang: 'ar' | 'en' | 'bilingual') {
+  const track = getTrackById(trackId);
+  if (!track) return trackId;
+  if (lang === 'bilingual') {
+    return track.id === 'american' ? track.nameAr : `${track.nameAr} · ${track.nameEn}`;
+  }
+  return lang === 'ar' ? track.nameAr : track.nameEn;
+}
+
+export function getGradeLabel(trackId: string, gradeId: string, lang: 'ar' | 'en' | 'bilingual') {
   const track = getTrackById(trackId);
   const grade = track?.grades.find((g) => g.id === gradeId);
   if (!grade) return gradeId;
+  if (lang === 'bilingual') {
+    return grade.labelAr.includes(grade.labelEn) ? grade.labelAr : `${grade.labelAr} · ${grade.labelEn}`;
+  }
   return lang === 'ar' ? grade.labelAr : grade.labelEn;
 }

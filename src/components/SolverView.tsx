@@ -1,6 +1,7 @@
-import React, { useRef, useState } from 'react';
-import { Language, UserProfile } from '../types/physics';
+import React, { useEffect, useRef, useState } from 'react';
+import { Language, StudyLanguage, UserProfile } from '../types/physics';
 import { LatexBlock, RichPhysicsText } from './MathRenderer';
+import { StudyLanguageSwitcher } from './BilingualBlock';
 import {
   Camera,
   CheckCircle2,
@@ -14,6 +15,7 @@ import {
 
 interface SolverViewProps {
   lang: Language;
+  studyLang: StudyLanguage;
   profile: UserProfile;
 }
 
@@ -34,7 +36,13 @@ interface SolverSolution {
   sanityCheck: string;
 }
 
-export function SolverView({ lang, profile }: SolverViewProps) {
+export function SolverView({ lang, studyLang, profile }: SolverViewProps) {
+  const [outputLang, setOutputLang] = useState<StudyLanguage>(studyLang);
+
+  useEffect(() => {
+    setOutputLang(studyLang);
+  }, [studyLang]);
+
   const [inputMode, setInputMode] = useState<'text' | 'upload' | 'camera' | 'manual'>('text');
   const [problemText, setProblemText] = useState('');
   const [manualGivens, setManualGivens] = useState<Array<{ symbol: string; value: string; unit: string }>>([
@@ -130,7 +138,7 @@ export function SolverView({ lang, profile }: SolverViewProps) {
           problemText: inputMode === 'manual' ? `Find ${manualTarget}` : problemText,
           manualGivens: inputMode === 'manual' ? manualGivens : [],
           manualTarget: inputMode === 'manual' ? manualTarget : '',
-          language: lang,
+          language: outputLang,
           track: profile.track,
           attachment: attachment ? { mimeType: attachment.mimeType, data: attachment.data } : undefined,
         }),
@@ -157,7 +165,7 @@ export function SolverView({ lang, profile }: SolverViewProps) {
           stepTitle,
           stepContent,
           problemContext: problemText || manualTarget,
-          language: lang,
+          language: outputLang,
         }),
       });
       const data = await res.json();
@@ -172,15 +180,23 @@ export function SolverView({ lang, profile }: SolverViewProps) {
   return (
     <div className="space-y-6 max-w-5xl mx-auto">
       <div className="rounded-2xl glass-card p-6 space-y-5">
-        <div>
-          <h1 className="text-2xl font-bold">
-            {lang === 'ar' ? 'حل المسائل الفيزيائية الذكي (11 خطوة موثقة)' : 'Smart 11-Step Physics Problem Solver'}
-          </h1>
-          <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">
-            {lang === 'ar'
-              ? 'أدخل المسألة نصيًا، بالكاميرا، برفع صورة أو PDF أو رسم دائرة، أو أدخل المعطيات يدويًا — مع تحقق حسابي عبر محرك Math.js.'
-              : 'Input via text, live camera, image/PDF/circuit upload, or structured manual givens — verified numerically with Math.js.'}
-          </p>
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+          <div>
+            <h1 className="text-2xl font-bold">
+              {lang === 'ar' ? 'حل المسائل الفيزيائية الذكي (11 خطوة موثقة)' : 'Smart 11-Step Physics Problem Solver'}
+            </h1>
+            <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">
+              {lang === 'ar'
+                ? 'أدخل المسألة بالعربية أو الإنجليزية نصيًا أو بالكاميرا أو برفع صورة أو PDF — مع تحقق حسابي عبر محرك Math.js.'
+                : 'Input problems in Arabic or English via text, camera, image/PDF upload, or structured givens — verified numerically with Math.js.'}
+            </p>
+          </div>
+          <StudyLanguageSwitcher
+            value={outputLang}
+            onChange={setOutputLang}
+            uiLang={lang}
+            label={lang === 'ar' ? 'لغة الحل:' : 'Solution Language:'}
+          />
         </div>
 
         {/* Input Mode Tabs */}
@@ -424,9 +440,13 @@ export function SolverView({ lang, profile }: SolverViewProps) {
                       </button>
                     </div>
                     {step.latex ? (
-                      <LatexBlock latex={step.latex} />
+                      <div dir="ltr">
+                        <LatexBlock latex={step.latex} />
+                      </div>
                     ) : (
-                      <RichPhysicsText text={step.content} />
+                      <div dir="auto">
+                        <RichPhysicsText text={step.content} />
+                      </div>
                     )}
                     {explainingStep === step.key && (
                       <p className="text-xs text-blue-500 flex items-center gap-1.5">
@@ -435,7 +455,7 @@ export function SolverView({ lang, profile }: SolverViewProps) {
                       </p>
                     )}
                     {stepExplanations[step.key] && (
-                      <div className="mt-2 p-3 rounded-xl bg-blue-500/8 border border-blue-500/20">
+                      <div dir="auto" className="mt-2 p-3 rounded-xl bg-blue-500/8 border border-blue-500/20">
                         <RichPhysicsText text={stepExplanations[step.key]} />
                       </div>
                     )}

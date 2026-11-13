@@ -1,18 +1,27 @@
-import React, { useState } from 'react';
-import { Difficulty, Language, QuestionItem, QuestionType, UserProfile } from '../types/physics';
-import { getGradeLabel, getTrackById } from '../data/tracks';
+import React, { useEffect, useState } from 'react';
+import { Difficulty, Language, QuestionItem, QuestionType, StudyLanguage, UserProfile } from '../types/physics';
+import { getGradeLabel, getTrackLabel } from '../data/tracks';
+import { mergeBilingualOptions, pickStudyText } from '../lib/bilingual';
+import { BilingualTextBlock, StudyLanguageSwitcher } from './BilingualBlock';
 import { CheckCircle2, XCircle } from 'lucide-react';
 import { evaluate } from 'mathjs';
 
 interface QuestionBankViewProps {
   lang: Language;
+  studyLang: StudyLanguage;
   profile: UserProfile;
   questions: QuestionItem[];
 }
 
-export function QuestionBankView({ lang, profile, questions }: QuestionBankViewProps) {
-  const trackInfo = getTrackById(profile.track);
-  const gradeLabel = getGradeLabel(profile.track, profile.grade, lang);
+export function QuestionBankView({ lang, studyLang, profile, questions }: QuestionBankViewProps) {
+  const [viewLang, setViewLang] = useState<StudyLanguage>(studyLang);
+
+  useEffect(() => {
+    setViewLang(studyLang);
+  }, [studyLang]);
+
+  const trackLabel = getTrackLabel(profile.track, viewLang);
+  const gradeLabel = getGradeLabel(profile.track, profile.grade, viewLang);
 
   // Strict track + grade isolation
   const scopedQuestions = questions.filter((q) => q.track === profile.track && q.grade === profile.grade);
@@ -50,13 +59,22 @@ export function QuestionBankView({ lang, profile, questions }: QuestionBankViewP
   return (
     <div className="space-y-6 max-w-5xl mx-auto">
       <div className="rounded-2xl glass-card p-6 space-y-4">
-        <div>
-          <p className="text-xs text-blue-600 dark:text-cyan-400">
-            {lang === 'ar' ? trackInfo?.nameAr : trackInfo?.nameEn} · {gradeLabel}
-          </p>
-          <h1 className="text-2xl font-bold mt-0.5">
-            {lang === 'ar' ? 'بنك الأسئلة الفيزيائية' : 'Physics Question Bank'}
-          </h1>
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+          <div>
+            <p className="text-xs text-blue-600 dark:text-cyan-400">
+              {trackLabel} · {gradeLabel}
+            </p>
+            <h1 className="text-2xl font-bold mt-0.5">
+              {lang === 'ar' ? 'بنك الأسئلة الفيزيائية' : 'Physics Question Bank'}
+            </h1>
+          </div>
+
+          <StudyLanguageSwitcher
+            value={viewLang}
+            onChange={setViewLang}
+            uiLang={lang}
+            label={lang === 'ar' ? 'لغة الأسئلة:' : 'Question Language:'}
+          />
         </div>
 
         <div className="flex flex-wrap gap-3">
@@ -98,23 +116,26 @@ export function QuestionBankView({ lang, profile, questions }: QuestionBankViewP
           {visible.map((q, idx) => {
             const wasChecked = checked[q.id];
             const right = isCorrect(q);
+            const mergedOpts = mergeBilingualOptions(q.optionsAr, q.optionsEn, viewLang);
+            const stepsLen = Math.max(q.stepsAr?.length || 0, q.stepsEn?.length || 0);
             return (
-              <div
-                key={q.id}
-                className="rounded-2xl glass-card p-6 space-y-4"
-              >
+              <div key={q.id} className="rounded-2xl glass-card p-6 space-y-4">
                 <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
                   <span>
-                    #{idx + 1} · {q.difficulty.toUpperCase()} · {lang === 'ar' ? q.skillAr : q.skillEn}
+                    #{idx + 1} · {q.difficulty.toUpperCase()} · {pickStudyText(q.skillAr, q.skillEn, viewLang)}
                   </span>
-                  <span>{lang === 'ar' ? q.sourceAr : q.sourceEn}</span>
+                  <span>{pickStudyText(q.sourceAr, q.sourceEn, viewLang)}</span>
                 </div>
 
-                <p className="text-base font-semibold leading-relaxed">
-                  {lang === 'ar' ? q.textAr : q.textEn}
-                </p>
+                <BilingualTextBlock
+                  ar={q.textAr}
+                  en={q.textEn}
+                  studyLang={viewLang}
+                  rich
+                  className="text-base font-semibold leading-relaxed"
+                />
 
-                {q.type === 'numerical' || !(lang === 'ar' ? q.optionsAr : q.optionsEn)?.length ? (
+                {q.type === 'numerical' || mergedOpts.length === 0 ? (
                   <div className="flex items-center gap-2">
                     <input
                       type="text"
@@ -136,16 +157,16 @@ export function QuestionBankView({ lang, profile, questions }: QuestionBankViewP
                   </div>
                 ) : (
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                    {(lang === 'ar' ? q.optionsAr || [] : q.optionsEn || []).map((opt, oIdx) => {
+                    {mergedOpts.map((opt, oIdx) => {
                       const picked = answers[q.id] === String(oIdx);
                       const isRightOpt = q.correctAnswer === String(oIdx);
-                      const wrongReason =
-                        lang === 'ar' ? q.wrongOptionReasonsAr?.[oIdx] : q.wrongOptionReasonsEn?.[oIdx];
+                      const wrongAr = q.wrongOptionReasonsAr?.[oIdx];
+                      const wrongEn = q.wrongOptionReasonsEn?.[oIdx];
                       return (
                         <div key={oIdx} className="space-y-1">
                           <button
                             onClick={() => setAnswers((p) => ({ ...p, [q.id]: String(oIdx) }))}
-                            className={`w-full text-start p-3 rounded-xl border text-xs font-medium transition-all ${
+                            className={`w-full text-start p-3 rounded-xl border text-xs font-medium transition-all cursor-pointer ${
                               !wasChecked
                                 ? picked
                                   ? 'glass-btn-primary text-white'
@@ -157,10 +178,19 @@ export function QuestionBankView({ lang, profile, questions }: QuestionBankViewP
                                 : 'border-slate-200/40 dark:border-white/10 opacity-70'
                             }`}
                           >
-                            {opt}
+                            {viewLang === 'bilingual' && opt.ar !== opt.en ? (
+                              <div className="space-y-0.5">
+                                <p dir="rtl">{opt.ar}</p>
+                                <p dir="ltr" className="text-[11px] opacity-80">{opt.en}</p>
+                              </div>
+                            ) : (
+                              <span>{opt.single}</span>
+                            )}
                           </button>
-                          {wasChecked && !isRightOpt && wrongReason && (
-                            <p className="text-[11px] text-slate-500 dark:text-slate-400 px-1">{wrongReason}</p>
+                          {wasChecked && !isRightOpt && (wrongAr || wrongEn) && (
+                            <p className="text-[11px] text-slate-500 dark:text-slate-400 px-1">
+                              {pickStudyText(wrongAr, wrongEn, viewLang)}
+                            </p>
                           )}
                         </div>
                       );
@@ -171,7 +201,7 @@ export function QuestionBankView({ lang, profile, questions }: QuestionBankViewP
                 <div className="flex items-center justify-between pt-2">
                   <button
                     onClick={() => setChecked((p) => ({ ...p, [q.id]: true }))}
-                    className="px-4 py-2 rounded-xl glass-btn-primary text-xs font-semibold"
+                    className="px-4 py-2 rounded-xl glass-btn-primary text-xs font-semibold cursor-pointer"
                   >
                     {lang === 'ar' ? 'تحقق من الإجابة' : 'Check Answer'}
                   </button>
@@ -195,9 +225,31 @@ export function QuestionBankView({ lang, profile, questions }: QuestionBankViewP
                 </div>
 
                 {wasChecked && (
-                  <div className="rounded-xl glass-subcard p-4 text-xs leading-relaxed">
-                    <p className="font-semibold mb-1">{lang === 'ar' ? 'شرح الحل:' : 'Solution Explanation:'}</p>
-                    <p>{lang === 'ar' ? q.explanationAr : q.explanationEn}</p>
+                  <div className="rounded-xl glass-subcard p-4 text-xs leading-relaxed space-y-2">
+                    <p className="font-semibold">{lang === 'ar' ? 'شرح الحل:' : 'Solution Explanation:'}</p>
+                    <BilingualTextBlock
+                      ar={q.explanationAr}
+                      en={q.explanationEn}
+                      studyLang={viewLang}
+                      rich
+                      className="text-xs text-slate-700 dark:text-slate-300"
+                    />
+                    {stepsLen > 0 && (
+                      <ol className="space-y-1.5 pt-2 border-t border-slate-200/60 dark:border-white/10">
+                        {Array.from({ length: stepsLen }).map((_, sIdx) => (
+                          <li key={sIdx} className="flex items-start gap-2">
+                            <span className="font-mono-num font-bold text-cyan-500 shrink-0">{sIdx + 1}.</span>
+                            <BilingualTextBlock
+                              ar={q.stepsAr?.[sIdx] || q.stepsEn?.[sIdx] || ''}
+                              en={q.stepsEn?.[sIdx] || q.stepsAr?.[sIdx] || ''}
+                              studyLang={viewLang}
+                              rich
+                              className="text-xs"
+                            />
+                          </li>
+                        ))}
+                      </ol>
+                    )}
                   </div>
                 )}
               </div>
@@ -208,3 +260,4 @@ export function QuestionBankView({ lang, profile, questions }: QuestionBankViewP
     </div>
   );
 }
+

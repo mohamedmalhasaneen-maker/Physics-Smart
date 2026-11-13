@@ -5,10 +5,13 @@ import {
   Lesson,
   LessonProgress,
   NavSection,
+  StudyLanguage,
   StudyTask,
   UserProfile,
 } from '../types/physics';
-import { getGradeLabel, getTrackById } from '../data/tracks';
+import { getGradeLabel, getTrackLabel } from '../data/tracks';
+import { pickStudyText } from '../lib/bilingual';
+import { BilingualTextBlock, BilingualTitle, StudyLanguageSwitcher } from './BilingualBlock';
 import {
   ArrowLeft,
   ArrowRight,
@@ -19,6 +22,7 @@ import {
   CalendarClock,
   CheckCircle2,
   FlaskConical,
+  Languages,
   LineChart,
   Play,
   Sparkles,
@@ -28,6 +32,8 @@ import {
 
 interface DashboardViewProps {
   lang: Language;
+  studyLang: StudyLanguage;
+  onChangeStudyLang: (next: StudyLanguage) => void;
   profile: UserProfile;
   lessons: Lesson[];
   progressMap: Record<string, LessonProgress>;
@@ -41,6 +47,8 @@ interface DashboardViewProps {
 
 export function DashboardView({
   lang,
+  studyLang,
+  onChangeStudyLang,
   profile,
   lessons,
   progressMap,
@@ -51,8 +59,8 @@ export function DashboardView({
   onOpenLesson,
   onToggleTask,
 }: DashboardViewProps) {
-  const trackInfo = getTrackById(profile.track);
-  const gradeLabel = getGradeLabel(profile.track, profile.grade, lang);
+  const trackLabel = getTrackLabel(profile.track, studyLang);
+  const gradeLabel = getGradeLabel(profile.track, profile.grade, studyLang);
 
   // Strict track + grade filtered lessons
   const scopedLessons = lessons.filter((l) => l.track === profile.track && l.grade === profile.grade);
@@ -104,7 +112,7 @@ export function DashboardView({
         <div className="space-y-2 max-w-2xl">
           <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600 dark:text-slate-300">
             <span className="font-semibold text-blue-600 dark:text-cyan-400">
-              {lang === 'ar' ? trackInfo?.nameAr : trackInfo?.nameEn}
+              {trackLabel}
             </span>
             <span aria-hidden="true">·</span>
             <span>{gradeLabel}</span>
@@ -123,8 +131,8 @@ export function DashboardView({
           <p className="text-sm text-slate-600 dark:text-slate-300">
             {lastLesson
               ? lang === 'ar'
-                ? `آخر درس تمت دراسته: ${lastLesson.titleAr}`
-                : `Last studied lesson: ${lastLesson.titleEn}`
+                ? `آخر درس تمت دراسته: ${pickStudyText(lastLesson.titleAr, lastLesson.titleEn, studyLang)}`
+                : `Last studied lesson: ${pickStudyText(lastLesson.titleAr, lastLesson.titleEn, studyLang)}`
               : lang === 'ar'
               ? 'ابدأ بأول درس في منهجك الدراسي الآن.'
               : 'Start your first physics lesson in this curriculum track.'}
@@ -135,7 +143,7 @@ export function DashboardView({
           {lastLesson && (
             <button
               onClick={() => onOpenLesson(lastLesson.id)}
-              className="px-5 py-3 rounded-xl glass-btn-primary text-sm font-semibold flex items-center gap-2 whitespace-nowrap"
+              className="px-5 py-3 rounded-xl glass-btn-primary text-sm font-semibold flex items-center gap-2 whitespace-nowrap cursor-pointer"
             >
               <Play className="w-4 h-4" />
               <span>{lang === 'ar' ? 'استكمال المذاكرة' : 'Continue Studying'}</span>
@@ -143,12 +151,36 @@ export function DashboardView({
           )}
           <button
             onClick={() => onNavigate('tutor')}
-            className="px-4 py-3 rounded-xl glass-btn-secondary text-sm font-medium flex items-center gap-2 whitespace-nowrap"
+            className="px-4 py-3 rounded-xl glass-btn-secondary text-sm font-medium flex items-center gap-2 whitespace-nowrap cursor-pointer"
           >
             <Bot className="w-4 h-4 text-blue-600 dark:text-cyan-400" />
             <span>{lang === 'ar' ? 'اسأل المدرس الذكي' : 'Ask AI Tutor'}</span>
           </button>
         </div>
+      </section>
+
+      {/* Study Language Setting Card */}
+      <section className="rounded-2xl glass-card p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div className="flex items-start gap-3">
+          <span className="glass-icon glass-icon-cyan w-9 h-9 shrink-0">
+            <Languages className="w-4 h-4" />
+          </span>
+          <div>
+            <h2 className="text-sm font-bold text-slate-900 dark:text-white">
+              {lang === 'ar' ? 'إعداد لغة الدراسة والمحتوى العلمي' : 'Study Content Language Preference'}
+            </h2>
+            <p className="text-xs text-slate-600 dark:text-slate-400 mt-0.5">
+              {profile.track === 'american'
+                ? lang === 'ar'
+                  ? 'يمكنك التبديل في أي وقت بين العربية والإنجليزية أو اللغتين معًا لنظام American Diploma دون فقدان أي تقدم.'
+                  : 'Switch anytime between Arabic, English, or Bilingual study across your American Diploma curriculum without losing progress.'
+                : lang === 'ar'
+                  ? 'اختر عرض الدروس والأسئلة والمدرس الذكي بالعربية أو الإنجليزية أو باللغتين معًا.'
+                  : 'Choose whether lessons, questions, and AI explanations display in Arabic, English, or Bilingual mode.'}
+            </p>
+          </div>
+        </div>
+        <StudyLanguageSwitcher value={studyLang} onChange={onChangeStudyLang} uiLang={lang} />
       </section>
 
       {/* 4-column KPI strip */}
@@ -271,11 +303,15 @@ export function DashboardView({
                 {nextSuggested.map((lesson) => (
                   <div key={lesson.id} className="py-3.5 flex items-center justify-between gap-4">
                     <div className="min-w-0">
-                      <p className="text-sm font-semibold truncate">
-                        {lang === 'ar' ? lesson.titleAr : lesson.titleEn}
-                      </p>
+                      <BilingualTitle
+                        ar={lesson.titleAr}
+                        en={lesson.titleEn}
+                        studyLang={studyLang}
+                        as="p"
+                        className="text-sm font-semibold truncate"
+                      />
                       <p className="text-xs text-slate-500 dark:text-slate-400 truncate mt-0.5">
-                        {lang === 'ar' ? lesson.unitTitleAr : lesson.unitTitleEn} ·{' '}
+                        {pickStudyText(lesson.unitTitleAr, lesson.unitTitleEn, studyLang)} ·{' '}
                         <span className="font-mono-num">{lesson.estimatedMinutes}</span>{' '}
                         {lang === 'ar' ? 'دقيقة' : 'min'}
                       </p>
@@ -366,7 +402,7 @@ export function DashboardView({
                   {strongLessons.map((l) => (
                     <li key={l.id} className="flex items-center gap-2">
                       <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
-                      <span className="truncate">{lang === 'ar' ? l.titleAr : l.titleEn}</span>
+                      <span className="truncate">{pickStudyText(l.titleAr, l.titleEn, studyLang)}</span>
                     </li>
                   ))}
                 </ul>
@@ -385,7 +421,7 @@ export function DashboardView({
                 <ul className="space-y-1.5 text-sm">
                   {weakLessons.map((l) => (
                     <li key={l.id} className="flex items-center justify-between gap-2">
-                      <span className="truncate">{lang === 'ar' ? l.titleAr : l.titleEn}</span>
+                      <span className="truncate">{pickStudyText(l.titleAr, l.titleEn, studyLang)}</span>
                       <button
                         onClick={() => onOpenLesson(l.id)}
                         className="text-xs text-blue-600 dark:text-cyan-400 hover:underline shrink-0"
@@ -413,13 +449,20 @@ export function DashboardView({
             </h2>
             <div className="space-y-3 text-xs">
               {announcements.map((ann) => (
-                <div key={ann.id} className="p-3.5 rounded-xl glass-subcard">
-                  <p className="font-semibold text-slate-900 dark:text-white">
-                    {lang === 'ar' ? ann.titleAr : ann.titleEn}
-                  </p>
-                  <p className="text-slate-600 dark:text-slate-300 mt-1">
-                    {lang === 'ar' ? ann.bodyAr : ann.bodyEn}
-                  </p>
+                <div key={ann.id} className="p-3.5 rounded-xl glass-subcard space-y-1.5">
+                  <BilingualTitle
+                    ar={ann.titleAr}
+                    en={ann.titleEn}
+                    studyLang={studyLang}
+                    as="p"
+                    className="font-semibold text-slate-900 dark:text-white"
+                  />
+                  <BilingualTextBlock
+                    ar={ann.bodyAr}
+                    en={ann.bodyEn}
+                    studyLang={studyLang}
+                    className="text-slate-600 dark:text-slate-300"
+                  />
                 </div>
               ))}
 

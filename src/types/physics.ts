@@ -1,6 +1,7 @@
 export type TrackId = 'thanawiya' | 'baccalaureate' | 'american';
 export type UserTrackState = TrackId | 'unset';
 export type Language = 'ar' | 'en';
+export type StudyLanguage = 'ar' | 'en' | 'bilingual';
 export type ThemeMode = 'dark' | 'light';
 export type UserRole = 'student' | 'admin';
 
@@ -27,6 +28,7 @@ export interface UserProfile {
   track: UserTrackState;
   grade: string;
   preferredLang: Language;
+  studyLang?: StudyLanguage;
   role: UserRole;
   points: number;
   level: number;
@@ -195,6 +197,8 @@ export interface QuestionItem {
   tolerance?: number; // e.g., 0.02 = 2%
   explanationAr: string;
   explanationEn: string;
+  stepsAr?: string[];
+  stepsEn?: string[];
   wrongOptionReasonsAr?: string[];
   wrongOptionReasonsEn?: string[];
   skillAr: string;

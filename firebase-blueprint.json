@@ -23,6 +23,7 @@
         "track": { "type": "string", "enum": ["thanawiya", "baccalaureate", "american", "unset"] },
         "grade": { "type": "string", "maxLength": 64 },
         "preferredLang": { "type": "string", "enum": ["ar", "en"] },
+        "studyLang": { "type": "string", "enum": ["ar", "en", "bilingual"] },
         "role": { "type": "string", "enum": ["student", "admin"] },
         "points": { "type": "number" },
         "level": { "type": "number" },

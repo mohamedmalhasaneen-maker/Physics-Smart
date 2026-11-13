@@ -5,14 +5,18 @@ import {
   Language,
   Lesson,
   QuestionItem,
+  StudyLanguage,
   TrackId,
   UserProfile,
 } from '../types/physics';
-import { EDUCATIONAL_TRACKS } from '../data/tracks';
+import { EDUCATIONAL_TRACKS, getGradeLabel, getTrackLabel } from '../data/tracks';
+import { pickStudyText } from '../lib/bilingual';
+import { BilingualTextBlock, BilingualTitle } from './BilingualBlock';
 import { Plus, Trash2, Upload, Shield, CheckCircle2 } from 'lucide-react';
 
 interface AdminDashboardViewProps {
   lang: Language;
+  studyLang: StudyLanguage;
   profile: UserProfile;
   lessons: Lesson[];
   questions: QuestionItem[];
@@ -32,6 +36,7 @@ interface AdminDashboardViewProps {
 
 export function AdminDashboardView({
   lang,
+  studyLang,
   profile,
   lessons,
   questions,
@@ -73,9 +78,11 @@ export function AdminDashboardView({
   const [qTextEn, setQTextEn] = useState('');
   const [qType, setQType] = useState<'mcq' | 'numerical'>('mcq');
   const [qDiff, setQDiff] = useState<'easy' | 'medium' | 'hard' | 'advanced'>('medium');
-  const [qOptions, setQOptions] = useState('Option A | Option B | Option C | Option D');
+  const [qOptions, setQOptions] = useState('خيار أ | خيار ب | خيار ج | خيار د');
+  const [qOptionsEn, setQOptionsEn] = useState('Option A | Option B | Option C | Option D');
   const [qAnswer, setQAnswer] = useState('0');
   const [qExplain, setQExplain] = useState('');
+  const [qExplainEn, setQExplainEn] = useState('');
 
   // Exam Creator State
   const [eTrack, setETrack] = useState<TrackId>('thanawiya');
@@ -163,8 +170,14 @@ export function AdminDashboardView({
     await onSaveLesson(newLesson);
     setLTitleAr('');
     setLTitleEn('');
+    setLUnitAr('');
+    setLUnitEn('');
     setLIntroAr('');
+    setLIntroEn('');
     setLExplainAr('');
+    setLExplainEn('');
+    setLPdfUrl('');
+    setLVideoUrl('');
     notify(lang === 'ar' ? 'تم حفظ ونشر الدرس في Firestore بنجاح.' : 'Lesson saved to Firestore.');
   };
 
@@ -186,7 +199,9 @@ export function AdminDashboardView({
 
   const handleCreateQuestion = async (e: React.FormEvent) => {
     e.preventDefault();
-    const opts = qOptions.split('|').map((s) => s.trim()).filter(Boolean);
+    const optsAr = qOptions.split('|').map((s) => s.trim()).filter(Boolean);
+    const optsEnParsed = qOptionsEn.split('|').map((s) => s.trim()).filter(Boolean);
+    const optsEn = optsEnParsed.length === optsAr.length ? optsEnParsed : optsAr;
     const newQ: QuestionItem = {
       id: `q-${Date.now()}`,
       track: qTrack,
@@ -199,12 +214,12 @@ export function AdminDashboardView({
       difficulty: qDiff,
       textAr: qTextAr,
       textEn: qTextEn || qTextAr,
-      optionsAr: qType === 'mcq' ? opts : undefined,
-      optionsEn: qType === 'mcq' ? opts : undefined,
+      optionsAr: qType === 'mcq' ? optsAr : undefined,
+      optionsEn: qType === 'mcq' ? optsEn : undefined,
       correctAnswer: qAnswer,
       numericValue: qType === 'numerical' ? parseFloat(qAnswer) : undefined,
       explanationAr: qExplain,
-      explanationEn: qExplain,
+      explanationEn: qExplainEn || qExplain,
       skillAr: 'تحليل فيزيائي',
       skillEn: 'Physics Analysis',
       sourceAr: 'إدارة Physics Smart',
@@ -214,6 +229,7 @@ export function AdminDashboardView({
     setQTextAr('');
     setQTextEn('');
     setQExplain('');
+    setQExplainEn('');
     notify(lang === 'ar' ? 'تمت إضافة السؤال إلى البنك.' : 'Question added to bank.');
   };
 
@@ -342,8 +358,10 @@ export function AdminDashboardView({
               <input placeholder="رابط PDF المرجع (اختياري)" value={lPdfUrl} onChange={(e) => setLPdfUrl(e.target.value)} className="glass-input px-3 py-2 rounded-xl text-xs" />
               <input placeholder="رابط فيديو الشرح (اختياري)" value={lVideoUrl} onChange={(e) => setLVideoUrl(e.target.value)} className="glass-input px-3 py-2 rounded-xl text-xs" />
             </div>
-            <textarea required rows={2} placeholder="مقدمة الدرس..." value={lIntroAr} onChange={(e) => setLIntroAr(e.target.value)} className="glass-input w-full p-3 rounded-xl text-xs" />
-            <textarea required rows={4} placeholder="الشرح العلمي التفصيلي (يدعم LaTeX مثل $F = ma$)..." value={lExplainAr} onChange={(e) => setLExplainAr(e.target.value)} className="glass-input w-full p-3 rounded-xl text-xs" />
+            <textarea required rows={2} placeholder="مقدمة الدرس (عربي)..." value={lIntroAr} onChange={(e) => setLIntroAr(e.target.value)} className="glass-input w-full p-3 rounded-xl text-xs" />
+            <textarea rows={2} dir="ltr" placeholder="Lesson Introduction (English)..." value={lIntroEn} onChange={(e) => setLIntroEn(e.target.value)} className="glass-input w-full p-3 rounded-xl text-xs" />
+            <textarea required rows={3} placeholder="الشرح العلمي التفصيلي عربي (يدعم LaTeX مثل $F = ma$)..." value={lExplainAr} onChange={(e) => setLExplainAr(e.target.value)} className="glass-input w-full p-3 rounded-xl text-xs" />
+            <textarea rows={3} dir="ltr" placeholder="Detailed Scientific Explanation (English, supports LaTeX e.g. $F = ma$)..." value={lExplainEn} onChange={(e) => setLExplainEn(e.target.value)} className="glass-input w-full p-3 rounded-xl text-xs" />
             <button type="submit" className="glass-btn-primary px-4 py-2.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 cursor-pointer">
               <Plus className="w-4 h-4" />
               {lang === 'ar' ? 'نشر الدرس' : 'Publish Lesson'}
@@ -375,7 +393,9 @@ export function AdminDashboardView({
               <h3 className="text-sm font-bold">{lang === 'ar' ? `الدروس الحالية (${lessons.length})` : `Active Lessons (${lessons.length})`}</h3>
               {lessons.map((l) => (
                 <div key={l.id} className="glass-subcard rounded-lg px-3 py-2 flex items-center justify-between text-xs gap-2">
-                  <span className="truncate">{lang === 'ar' ? l.titleAr : l.titleEn} ({l.track})</span>
+                  <span dir="auto" className="truncate">
+                    {pickStudyText(l.titleAr, l.titleEn, studyLang)} ({getTrackLabel(l.track, studyLang)})
+                  </span>
                   <button onClick={() => onDeleteLesson(l.id)} className="text-slate-400 hover:text-rose-500 transition-colors shrink-0 cursor-pointer">
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>
@@ -410,22 +430,26 @@ export function AdminDashboardView({
               </select>
             </div>
             <textarea required rows={2} placeholder="نص السؤال (عربي)" value={qTextAr} onChange={(e) => setQTextAr(e.target.value)} className="glass-input w-full p-3 rounded-xl text-xs" />
-            <textarea rows={2} placeholder="Question Text (English)" value={qTextEn} onChange={(e) => setQTextEn(e.target.value)} className="glass-input w-full p-3 rounded-xl text-xs" />
+            <textarea rows={2} dir="ltr" placeholder="Question Text (English)" value={qTextEn} onChange={(e) => setQTextEn(e.target.value)} className="glass-input w-full p-3 rounded-xl text-xs" />
             {qType === 'mcq' && (
-              <input value={qOptions} onChange={(e) => setQOptions(e.target.value)} placeholder="Options separated by |" className="glass-input w-full px-3 py-2 rounded-xl text-xs" />
+              <>
+                <input value={qOptions} onChange={(e) => setQOptions(e.target.value)} placeholder="الخيارات بالعربية مفصولة بـ |" className="glass-input w-full px-3 py-2 rounded-xl text-xs" />
+                <input dir="ltr" value={qOptionsEn} onChange={(e) => setQOptionsEn(e.target.value)} placeholder="English Options separated by |" className="glass-input w-full px-3 py-2 rounded-xl text-xs" />
+              </>
             )}
             <input value={qAnswer} onChange={(e) => setQAnswer(e.target.value)} placeholder={qType === 'mcq' ? 'Correct index (0-3)' : 'Numeric answer'} className="glass-input w-full px-3 py-2 rounded-xl text-xs" />
-            <textarea required rows={2} placeholder="شرح الإجابة الصحيحة" value={qExplain} onChange={(e) => setQExplain(e.target.value)} className="glass-input w-full p-3 rounded-xl text-xs" />
+            <textarea required rows={2} placeholder="شرح الإجابة الصحيحة (عربي)" value={qExplain} onChange={(e) => setQExplain(e.target.value)} className="glass-input w-full p-3 rounded-xl text-xs" />
+            <textarea rows={2} dir="ltr" placeholder="Explanation (English)" value={qExplainEn} onChange={(e) => setQExplainEn(e.target.value)} className="glass-input w-full p-3 rounded-xl text-xs" />
             <button type="submit" className="glass-btn-primary px-4 py-2.5 rounded-xl text-xs font-semibold cursor-pointer">
               {lang === 'ar' ? 'إضافة السؤال' : 'Save Question'}
             </button>
           </form>
 
-          <div className="lg:col-span-6 glass-card rounded-2xl p-6 space-y-2.5 max-h-[500px] overflow-y-auto">
+          <div className="lg:col-span-6 glass-card rounded-2xl p-6 space-y-2.5 max-h-[540px] overflow-y-auto">
             <h3 className="text-sm font-bold">{lang === 'ar' ? `الأسئلة المسجلة (${questions.length})` : `Question Bank (${questions.length})`}</h3>
             {questions.map((q) => (
               <div key={q.id} className="glass-subcard rounded-lg px-3 py-2 flex items-center justify-between text-xs gap-2">
-                <span className="truncate">{lang === 'ar' ? q.textAr : q.textEn}</span>
+                <span dir="auto" className="truncate">{pickStudyText(q.textAr, q.textEn, studyLang)}</span>
                 <button onClick={() => onDeleteQuestion(q.id)} className="text-slate-400 hover:text-rose-500 transition-colors shrink-0 cursor-pointer">
                   <Trash2 className="w-3.5 h-3.5" />
                 </button>
@@ -458,7 +482,9 @@ export function AdminDashboardView({
             <h3 className="text-sm font-bold">{lang === 'ar' ? `الامتحانات المنشورة (${exams.length})` : `Published Exams (${exams.length})`}</h3>
             {exams.map((ex) => (
               <div key={ex.id} className="glass-subcard rounded-lg px-3 py-2 flex items-center justify-between text-xs gap-2">
-                <span>{lang === 'ar' ? ex.titleAr : ex.titleEn} ({ex.track} · {ex.durationMinutes}m)</span>
+                <span dir="auto" className="truncate">
+                  {pickStudyText(ex.titleAr, ex.titleEn, studyLang)} ({getTrackLabel(ex.track, studyLang)} · {ex.durationMinutes}m)
+                </span>
                 <button onClick={() => onDeleteExam(ex.id)} className="text-slate-400 hover:text-rose-500 transition-colors shrink-0 cursor-pointer">
                   <Trash2 className="w-3.5 h-3.5" />
                 </button>
@@ -475,7 +501,13 @@ export function AdminDashboardView({
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {labs.map((lab) => (
               <div key={lab.id} className="glass-subcard p-4 rounded-xl space-y-2">
-                <p className="text-sm font-bold">{lang === 'ar' ? lab.titleAr : lab.titleEn}</p>
+                <BilingualTitle
+                  ar={lab.titleAr}
+                  en={lab.titleEn}
+                  studyLang={studyLang}
+                  as="p"
+                  className="text-sm font-bold"
+                />
                 <textarea
                   rows={2}
                   defaultValue={lang === 'ar' ? lab.descriptionAr : lab.descriptionEn}
@@ -511,7 +543,9 @@ export function AdminDashboardView({
                   <tr key={s.uid}>
                     <td className="py-2.5 px-3 font-medium">{s.displayName}</td>
                     <td className="py-2.5 px-3 font-mono-num">{s.email}</td>
-                    <td className="py-2.5 px-3">{s.track} / {s.grade}</td>
+                    <td className="py-2.5 px-3">
+                      {getTrackLabel(s.track, studyLang)} / {getGradeLabel(s.track, s.grade, studyLang)}
+                    </td>
                     <td className="py-2.5 px-3 font-mono-num">{s.points}</td>
                   </tr>
                 ))}
@@ -527,8 +561,9 @@ export function AdminDashboardView({
           <form onSubmit={handlePostAnnouncement} className="glass-card rounded-2xl p-6 space-y-3">
             <h2 className="text-base font-bold">{lang === 'ar' ? 'إرسال إشعار للطلاب' : 'Publish Student Notification'}</h2>
             <input required placeholder="عنوان الإشعار (عربي)" value={annTitleAr} onChange={(e) => setAnnTitleAr(e.target.value)} className="glass-input w-full px-3 py-2 rounded-xl text-xs" />
-            <input placeholder="Title (English)" value={annTitleEn} onChange={(e) => setAnnTitleEn(e.target.value)} className="glass-input w-full px-3 py-2 rounded-xl text-xs" />
-            <textarea required rows={3} placeholder="نص الإشعار..." value={annBodyAr} onChange={(e) => setAnnBodyAr(e.target.value)} className="glass-input w-full p-3 rounded-xl text-xs" />
+            <input dir="ltr" placeholder="Title (English)" value={annTitleEn} onChange={(e) => setAnnTitleEn(e.target.value)} className="glass-input w-full px-3 py-2 rounded-xl text-xs" />
+            <textarea required rows={3} placeholder="نص الإشعار (عربي)..." value={annBodyAr} onChange={(e) => setAnnBodyAr(e.target.value)} className="glass-input w-full p-3 rounded-xl text-xs" />
+            <textarea rows={3} dir="ltr" placeholder="Announcement Body (English)..." value={annBodyEn} onChange={(e) => setAnnBodyEn(e.target.value)} className="glass-input w-full p-3 rounded-xl text-xs" />
             <button type="submit" className="glass-btn-primary px-4 py-2.5 rounded-xl text-xs font-semibold cursor-pointer">
               {lang === 'ar' ? 'إرسال الإشعار' : 'Send Notification'}
             </button>
@@ -537,9 +572,20 @@ export function AdminDashboardView({
           <div className="glass-card rounded-2xl p-6 space-y-3">
             <h2 className="text-base font-bold">{lang === 'ar' ? 'الإشعارات النشطة' : 'Active Announcements'}</h2>
             {announcements.map((a) => (
-              <div key={a.id} className="glass-subcard p-3.5 rounded-xl text-xs">
-                <p className="font-bold">{lang === 'ar' ? a.titleAr : a.titleEn}</p>
-                <p className="text-slate-500 dark:text-slate-400 mt-1">{lang === 'ar' ? a.bodyAr : a.bodyEn}</p>
+              <div key={a.id} className="glass-subcard p-3.5 rounded-xl text-xs space-y-1.5">
+                <BilingualTitle
+                  ar={a.titleAr}
+                  en={a.titleEn}
+                  studyLang={studyLang}
+                  as="p"
+                  className="font-bold"
+                />
+                <BilingualTextBlock
+                  ar={a.bodyAr}
+                  en={a.bodyEn}
+                  studyLang={studyLang}
+                  className="text-slate-500 dark:text-slate-400"
+                />
               </div>
             ))}
           </div>

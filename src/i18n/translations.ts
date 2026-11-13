@@ -55,6 +55,11 @@ export const translations = {
       minutes: 'دقيقة',
       points: 'نقطة',
       level: 'المستوى',
+      studyLangLabel: 'لغة الدراسة',
+      studyLangAr: 'العربية',
+      studyLangEn: 'English',
+      studyLangBilingual: 'اللغتان معًا',
+      examLangLabel: 'لغة أسئلة الامتحان',
     },
     auth: {
       welcomeTitle: 'بيئة فيزيائية متكاملة للفهم والتطبيق والتجربة',
@@ -140,6 +145,11 @@ export const translations = {
       minutes: 'min',
       points: 'pts',
       level: 'Level',
+      studyLangLabel: 'Study Language',
+      studyLangAr: 'Arabic',
+      studyLangEn: 'English',
+      studyLangBilingual: 'Bilingual',
+      examLangLabel: 'Exam Question Language',
     },
     auth: {
       welcomeTitle: 'A Complete Physics Ecosystem for Understanding, Simulation, and Mastery',

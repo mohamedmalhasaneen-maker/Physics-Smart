@@ -18,6 +18,7 @@ import {
   createUserWithEmailAndPassword,
   db,
   handleFirestoreError,
+  isFirestoreOfflineError,
   OperationType,
   serverTimestamp,
   signOut,
@@ -35,6 +36,7 @@ import {
   NavSection,
   QuestionItem,
   SavedGraph,
+  StudyLanguage,
   StudyTask,
   ThemeMode,
   TrackId,
@@ -42,7 +44,9 @@ import {
   UserProfile,
 } from './types/physics';
 import { tFor } from './i18n/translations';
-import { getGradeLabel, getTrackById } from './data/tracks';
+import { getGradeLabel, getTrackLabel } from './data/tracks';
+import { resolveStudyLanguage } from './lib/bilingual';
+import { StudyLanguageSwitcher } from './components/BilingualBlock';
 import { CURRICULUM_SEED } from './data/curriculumSeed';
 import { FORMULAS_SEED } from './data/formulasSeed';
 import { CHALLENGES_SEED, EXAMS_SEED, QUESTIONS_SEED } from './data/questionsSeed';
@@ -137,6 +141,11 @@ export default function App() {
   // Initial Firestore connection test + Auth listener
   useEffect(() => {
     testFirestoreConnection();
+    const handleOnline = () => {
+      testFirestoreConnection();
+    };
+    window.addEventListener('online', handleOnline);
+
     const unsub = onAuthStateChanged(auth, async (user) => {
       setFirebaseUser(user);
       if (!user) {
@@ -163,25 +172,34 @@ export default function App() {
 
       try {
         const userRef = doc(db, 'users', user.uid);
+        const isBootstrapAdmin = user.email === ADMIN_BOOTSTRAP_EMAIL && user.emailVerified;
         let snap;
         try {
           snap = await getDoc(userRef);
         } catch (err) {
-          handleFirestoreError(err, OperationType.GET, `users/${user.uid}`);
+          if (isFirestoreOfflineError(err)) {
+            await new Promise((r) => setTimeout(r, 1000));
+            try {
+              snap = await getDoc(userRef);
+            } catch (retryErr) {
+              if (!isFirestoreOfflineError(retryErr)) {
+                handleFirestoreError(retryErr, OperationType.GET, `users/${user.uid}`);
+              }
+            }
+          } else {
+            handleFirestoreError(err, OperationType.GET, `users/${user.uid}`);
+          }
         }
 
         if (snap && snap.exists()) {
           const data = snap.data() as UserProfile;
-          // Ensure bootstrap admin email gets admin role if verified
-          const isBootstrapAdmin = user.email === ADMIN_BOOTSTRAP_EMAIL && user.emailVerified;
           const resolvedProfile: UserProfile = {
             ...data,
             role: isBootstrapAdmin ? 'admin' : data.role,
           };
           setProfile(resolvedProfile);
           if (data.preferredLang) setLang(data.preferredLang);
-        } else {
-          const isBootstrapAdmin = user.email === ADMIN_BOOTSTRAP_EMAIL && user.emailVerified;
+        } else if (snap && !snap.exists()) {
           const newProfile: UserProfile = {
             uid: user.uid,
             displayName: user.displayName || user.email?.split('@')[0] || 'Student',
@@ -202,15 +220,35 @@ export default function App() {
               updatedAt: serverTimestamp(),
             });
           } catch (err) {
-            handleFirestoreError(err, OperationType.CREATE, `users/${user.uid}`);
+            if (!isFirestoreOfflineError(err)) {
+              handleFirestoreError(err, OperationType.CREATE, `users/${user.uid}`);
+            }
           }
           setProfile(newProfile);
+        } else {
+          // Offline fallback without overwriting any existing server profile; onSnapshot will hydrate once online
+          setProfile({
+            uid: user.uid,
+            displayName: user.displayName || user.email?.split('@')[0] || 'Student',
+            email: user.email || '',
+            photoURL: user.photoURL || '',
+            track: 'unset',
+            grade: '',
+            preferredLang: lang,
+            role: isBootstrapAdmin ? 'admin' : 'student',
+            points: 0,
+            level: 1,
+            badges: [],
+          });
         }
       } finally {
         setAuthReady(true);
       }
     });
-    return () => unsub();
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      unsub();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -220,6 +258,13 @@ export default function App() {
 
     const uid = firebaseUser.uid;
     const unsubs: Array<() => void> = [];
+    const handleListenerError = (err: unknown, op: OperationType, path: string) => {
+      if (isFirestoreOfflineError(err)) {
+        console.warn(`Firestore listener paused while offline (${path})`);
+        return;
+      }
+      handleFirestoreError(err, op, path);
+    };
 
     // 1. User profile live sync
     unsubs.push(
@@ -232,7 +277,7 @@ export default function App() {
             setProfile({ ...d, role: isBootstrapAdmin ? 'admin' : d.role });
           }
         },
-        (err) => handleFirestoreError(err, OperationType.GET, `users/${uid}`)
+        (err) => handleListenerError(err, OperationType.GET, `users/${uid}`)
       )
     );
 
@@ -248,7 +293,7 @@ export default function App() {
           });
           setProgressMap(map);
         },
-        (err) => handleFirestoreError(err, OperationType.LIST, `users/${uid}/progress`)
+        (err) => handleListenerError(err, OperationType.LIST, `users/${uid}/progress`)
       )
     );
 
@@ -260,7 +305,7 @@ export default function App() {
         (snap) => {
           setStudyTasks(snap.docs.map((d) => d.data() as StudyTask));
         },
-        (err) => handleFirestoreError(err, OperationType.LIST, `users/${uid}/studyTasks`)
+        (err) => handleListenerError(err, OperationType.LIST, `users/${uid}/studyTasks`)
       )
     );
 
@@ -274,7 +319,7 @@ export default function App() {
           list.sort((a, b) => (b.updatedAt?.seconds || 0) - (a.updatedAt?.seconds || 0));
           setExamAttempts(list);
         },
-        (err) => handleFirestoreError(err, OperationType.LIST, `users/${uid}/examAttempts`)
+        (err) => handleListenerError(err, OperationType.LIST, `users/${uid}/examAttempts`)
       )
     );
 
@@ -288,7 +333,7 @@ export default function App() {
           list.sort((a, b) => (b.updatedAt?.seconds || 0) - (a.updatedAt?.seconds || 0));
           setTutorSessions(list);
         },
-        (err) => handleFirestoreError(err, OperationType.LIST, `users/${uid}/tutorSessions`)
+        (err) => handleListenerError(err, OperationType.LIST, `users/${uid}/tutorSessions`)
       )
     );
 
@@ -300,7 +345,7 @@ export default function App() {
         (snap) => {
           setSavedGraphs(snap.docs.map((d) => d.data() as SavedGraph));
         },
-        (err) => handleFirestoreError(err, OperationType.LIST, `users/${uid}/graphs`)
+        (err) => handleListenerError(err, OperationType.LIST, `users/${uid}/graphs`)
       )
     );
 
@@ -312,7 +357,7 @@ export default function App() {
         (snap) => {
           setLeaderboard(snap.docs.map((d) => d.data() as LeaderboardEntry));
         },
-        (err) => handleFirestoreError(err, OperationType.LIST, 'leaderboardPublic')
+        (err) => handleListenerError(err, OperationType.LIST, 'leaderboardPublic')
       )
     );
 
@@ -336,7 +381,7 @@ export default function App() {
           });
           setAdminLessons(list);
         },
-        (err) => handleFirestoreError(err, OperationType.LIST, 'curricula')
+        (err) => handleListenerError(err, OperationType.LIST, 'curricula')
       )
     );
 
@@ -359,7 +404,7 @@ export default function App() {
           });
           setAdminQuestions(list);
         },
-        (err) => handleFirestoreError(err, OperationType.LIST, 'questions')
+        (err) => handleListenerError(err, OperationType.LIST, 'questions')
       )
     );
 
@@ -382,7 +427,7 @@ export default function App() {
           });
           setAdminExams(list);
         },
-        (err) => handleFirestoreError(err, OperationType.LIST, 'exams')
+        (err) => handleListenerError(err, OperationType.LIST, 'exams')
       )
     );
 
@@ -405,7 +450,7 @@ export default function App() {
           });
           setAdminLabs(list);
         },
-        (err) => handleFirestoreError(err, OperationType.LIST, 'labConfigs')
+        (err) => handleListenerError(err, OperationType.LIST, 'labConfigs')
       )
     );
 
@@ -425,7 +470,7 @@ export default function App() {
           });
           if (list.length > 0) setAnnouncements(list);
         },
-        (err) => handleFirestoreError(err, OperationType.LIST, 'platformSettings')
+        (err) => handleListenerError(err, OperationType.LIST, 'platformSettings')
       )
     );
 
@@ -437,7 +482,7 @@ export default function App() {
           (snap) => {
             setAdminStudents(snap.docs.map((d) => d.data() as UserProfile));
           },
-          (err) => handleFirestoreError(err, OperationType.LIST, 'users')
+          (err) => handleListenerError(err, OperationType.LIST, 'users')
         )
       );
     }
@@ -481,9 +526,12 @@ export default function App() {
     password: string;
     track: TrackId;
     grade: string;
+    studyLang?: StudyLanguage;
   }) => {
     const cleanEmail = input.email.trim();
     const cleanName = input.fullName.trim();
+    const resolvedStudyLang: StudyLanguage =
+      input.studyLang || (input.track === 'american' ? 'bilingual' : lang);
     signupInFlightRef.current = true;
     try {
       const cred = await createUserWithEmailAndPassword(auth, cleanEmail, input.password);
@@ -499,6 +547,7 @@ export default function App() {
         track: input.track,
         grade: input.grade,
         preferredLang: lang,
+        studyLang: resolvedStudyLang,
         role: isBootstrapAdmin ? 'admin' : 'student',
         points: 0,
         level: 1,
@@ -532,14 +581,22 @@ export default function App() {
   };
 
   // Mutations with mandatory handleFirestoreError
-  const handleSaveTrackSelection = async (track: TrackId, grade: string, displayName?: string) => {
+  const handleSaveTrackSelection = async (
+    track: TrackId,
+    grade: string,
+    displayName?: string,
+    selectedStudyLang?: StudyLanguage
+  ) => {
     if (!firebaseUser) return;
     const ref = doc(db, 'users', firebaseUser.uid);
     const trimmedName = displayName?.trim();
+    const resolvedStudyLang: StudyLanguage =
+      selectedStudyLang || (track === 'american' ? profile?.studyLang || 'bilingual' : lang);
     const updatePayload: Record<string, any> = {
       track,
       grade,
       preferredLang: lang,
+      studyLang: resolvedStudyLang,
       updatedAt: serverTimestamp(),
     };
     if (trimmedName) {
@@ -559,6 +616,7 @@ export default function App() {
           track,
           grade,
           preferredLang: lang,
+          studyLang: resolvedStudyLang,
           role: isBootstrapAdmin ? 'admin' : 'student',
           points: 0,
           level: 1,
@@ -588,6 +646,22 @@ export default function App() {
         });
       } catch {
         // non-blocking preference sync
+      }
+    }
+  };
+
+  const handleChangeStudyLang = async (next: StudyLanguage) => {
+    if (profile) {
+      setProfile({ ...profile, studyLang: next });
+    }
+    if (firebaseUser && profile) {
+      try {
+        await updateDoc(doc(db, 'users', firebaseUser.uid), {
+          studyLang: next,
+          updatedAt: serverTimestamp(),
+        });
+      } catch (err) {
+        handleFirestoreError(err, OperationType.UPDATE, `users/${firebaseUser.uid}`);
       }
     }
   };
@@ -908,8 +982,9 @@ export default function App() {
     );
   }
 
-  const trackInfo = getTrackById(profile.track);
-  const gradeLabel = getGradeLabel(profile.track, profile.grade, lang);
+  const studyLang = resolveStudyLanguage(profile.studyLang, lang, profile.track);
+  const trackLabel = getTrackLabel(profile.track, studyLang);
+  const gradeLabel = getGradeLabel(profile.track, profile.grade, studyLang);
 
   const navGroups: Array<{
     groupLabel: string;
@@ -1088,7 +1163,7 @@ export default function App() {
 
       {/* Main Content Area */}
       <div className="relative z-10 flex-1 flex flex-col min-w-0">
-        {/* Top Bar: Clean Breadcrumb + Language/Theme Controls */}
+        {/* Top Bar: Clean Breadcrumb + Language/Study-Language/Theme Controls */}
         <header className="h-16 px-4 sm:px-6 border-b glass-topbar sticky top-0 z-30 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3 min-w-0">
             <button
@@ -1100,22 +1175,30 @@ export default function App() {
             </button>
             <div className="min-w-0">
               <p className="text-xs font-medium text-slate-600 dark:text-slate-300 truncate">
-                {lang === 'ar' ? trackInfo?.nameAr : trackInfo?.nameEn} · {gradeLabel}
+                {trackLabel} · {gradeLabel}
               </p>
             </div>
           </div>
 
-          <div className="flex items-center gap-2.5 shrink-0">
+          <div className="flex items-center gap-2 shrink-0">
+            <div className="hidden md:flex items-center">
+              <StudyLanguageSwitcher
+                value={studyLang}
+                onChange={handleChangeStudyLang}
+                uiLang={lang}
+                compact
+              />
+            </div>
             <button
               onClick={handleToggleLang}
-              className="px-3 py-1.5 rounded-xl glass-btn-secondary text-xs font-medium flex items-center gap-1.5 whitespace-nowrap"
+              className="px-3 py-1.5 rounded-xl glass-btn-secondary text-xs font-medium flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
             >
               <Globe className="w-3.5 h-3.5 text-blue-600 dark:text-cyan-400" />
               {t.common.switchLang}
             </button>
             <button
               onClick={() => setTheme((th) => (th === 'dark' ? 'light' : 'dark'))}
-              className="p-2 rounded-xl glass-btn-secondary"
+              className="p-2 rounded-xl glass-btn-secondary cursor-pointer"
               aria-label="Theme toggle"
             >
               {theme === 'dark' ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4 text-slate-700" />}
@@ -1127,6 +1210,8 @@ export default function App() {
           {activeSection === 'dashboard' && (
             <DashboardView
               lang={lang}
+              studyLang={studyLang}
+              onChangeStudyLang={handleChangeStudyLang}
               profile={profile}
               lessons={mergedLessons}
               progressMap={progressMap}
@@ -1142,6 +1227,8 @@ export default function App() {
           {activeSection === 'curriculum' && (
             <CurriculumView
               lang={lang}
+              studyLang={studyLang}
+              onChangeStudyLang={handleChangeStudyLang}
               profile={profile}
               lessons={mergedLessons}
               questions={mergedQuestions}
@@ -1159,16 +1246,18 @@ export default function App() {
           {activeSection === 'formulas' && (
             <FormulaLibraryView
               lang={lang}
+              studyLang={studyLang}
               formulas={FORMULAS_SEED}
               onOpenLesson={openLesson}
             />
           )}
 
-          {activeSection === 'lab' && <VirtualLabView lang={lang} labs={mergedLabs} />}
+          {activeSection === 'lab' && <VirtualLabView lang={lang} studyLang={studyLang} labs={mergedLabs} />}
 
           {activeSection === 'graphing' && (
             <GraphingToolView
               lang={lang}
+              studyLang={studyLang}
               profile={profile}
               savedGraphs={savedGraphs}
               onSaveGraph={handleSaveGraph}
@@ -1177,12 +1266,18 @@ export default function App() {
           )}
 
           {activeSection === 'questions' && (
-            <QuestionBankView lang={lang} profile={profile} questions={mergedQuestions} />
+            <QuestionBankView
+              lang={lang}
+              studyLang={studyLang}
+              profile={profile}
+              questions={mergedQuestions}
+            />
           )}
 
           {activeSection === 'exams' && (
             <ExamsView
               lang={lang}
+              studyLang={studyLang}
               profile={profile}
               exams={mergedExams}
               questions={mergedQuestions}
@@ -1194,6 +1289,7 @@ export default function App() {
           {activeSection === 'tutor' && (
             <TutorView
               lang={lang}
+              studyLang={studyLang}
               profile={profile}
               lessons={mergedLessons}
               sessions={tutorSessions}
@@ -1203,11 +1299,12 @@ export default function App() {
             />
           )}
 
-          {activeSection === 'solver' && <SolverView lang={lang} profile={profile} />}
+          {activeSection === 'solver' && <SolverView lang={lang} studyLang={studyLang} profile={profile} />}
 
           {activeSection === 'planner' && (
             <StudyPlannerView
               lang={lang}
+              studyLang={studyLang}
               profile={profile}
               lessons={mergedLessons}
               progressMap={progressMap}
@@ -1220,6 +1317,7 @@ export default function App() {
           {activeSection === 'challenges' && (
             <ChallengesView
               lang={lang}
+              studyLang={studyLang}
               profile={profile}
               challenges={CHALLENGES_SEED}
               leaderboard={leaderboard}
@@ -1230,6 +1328,7 @@ export default function App() {
           {activeSection === 'analytics' && (
             <AnalyticsView
               lang={lang}
+              studyLang={studyLang}
               profile={profile}
               lessons={mergedLessons}
               progressMap={progressMap}
@@ -1241,6 +1340,7 @@ export default function App() {
           {activeSection === 'admin' && (
             <AdminDashboardView
               lang={lang}
+              studyLang={studyLang}
               profile={profile}
               lessons={mergedLessons}
               questions={mergedQuestions}

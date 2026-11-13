@@ -1,9 +1,11 @@
 import React, { useState } from 'react';
-import { Language, Lesson, LessonProgress, StudyTask, UserProfile } from '../types/physics';
+import { Language, Lesson, LessonProgress, StudyLanguage, StudyTask, UserProfile } from '../types/physics';
+import { pickStudyText } from '../lib/bilingual';
 import { Calendar, Plus, Sparkles, Trash2 } from 'lucide-react';
 
 interface StudyPlannerViewProps {
   lang: Language;
+  studyLang: StudyLanguage;
   profile: UserProfile;
   lessons: Lesson[];
   progressMap: Record<string, LessonProgress>;
@@ -14,6 +16,7 @@ interface StudyPlannerViewProps {
 
 export function StudyPlannerView({
   lang,
+  studyLang,
   profile,
   lessons,
   progressMap,
@@ -60,10 +63,17 @@ export function StudyPlannerView({
       d.setDate(today.getDate() + i);
       const l = targets[i];
       const isWeak = weakLessons.some((w) => w.id === l.id);
+      const reviewPrefix = isWeak
+        ? studyLang === 'en'
+          ? 'Review: '
+          : studyLang === 'ar'
+            ? 'مراجعة: '
+            : 'مراجعة / Review: '
+        : '';
       await onSaveTask({
         id: `task-auto-${Date.now()}-${i}`,
         userId: profile.uid,
-        title: `${isWeak ? (lang === 'ar' ? 'مراجعة: ' : 'Review: ') : ''}${lang === 'ar' ? l.titleAr : l.titleEn}`,
+        title: `${reviewPrefix}${pickStudyText(l.titleAr, l.titleEn, studyLang)}`,
         track: profile.track === 'unset' ? 'thanawiya' : profile.track,
         lessonId: l.id,
         scheduledDate: d.toISOString().slice(0, 10),
@@ -129,7 +139,7 @@ export function StudyPlannerView({
             <option value="">{lang === 'ar' ? 'اختياري' : 'Optional'}</option>
             {scopedLessons.map((l) => (
               <option key={l.id} value={l.id}>
-                {lang === 'ar' ? l.titleAr : l.titleEn}
+                {pickStudyText(l.titleAr, l.titleEn, studyLang)}
               </option>
             ))}
           </select>

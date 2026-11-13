@@ -4,13 +4,17 @@ import {
   ExamBlueprint,
   Language,
   QuestionItem,
+  StudyLanguage,
   UserProfile,
 } from '../types/physics';
+import { mergeBilingualOptions, pickStudyText } from '../lib/bilingual';
+import { BilingualTextBlock, BilingualTitle, StudyLanguageSwitcher } from './BilingualBlock';
 import { Clock, RotateCcw, CheckCircle2, XCircle, Play } from 'lucide-react';
 import { evaluate } from 'mathjs';
 
 interface ExamsViewProps {
   lang: Language;
+  studyLang: StudyLanguage;
   profile: UserProfile;
   exams: ExamBlueprint[];
   questions: QuestionItem[];
@@ -20,6 +24,7 @@ interface ExamsViewProps {
 
 export function ExamsView({
   lang,
+  studyLang,
   profile,
   exams,
   questions,
@@ -29,12 +34,19 @@ export function ExamsView({
   const scopedExams = exams.filter((e) => e.track === profile.track && e.grade === profile.grade);
   const scopedQuestions = questions.filter((q) => q.track === profile.track && q.grade === profile.grade);
 
+  const [examLang, setExamLang] = useState<StudyLanguage>(studyLang);
+
+  useEffect(() => {
+    setExamLang(studyLang);
+  }, [studyLang]);
+
   const [activeExam, setActiveExam] = useState<{
     id: string;
     title: string;
     questions: QuestionItem[];
     durationMinutes: number;
     attemptId: string;
+    examLang: StudyLanguage;
   } | null>(null);
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [secondsLeft, setSecondsLeft] = useState(0);
@@ -64,12 +76,18 @@ export function ExamsView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [secondsLeft, activeExam?.attemptId, submittedResult]);
 
-  const startExam = async (examId: string, title: string, qList: QuestionItem[], durationMin: number) => {
+  const startExam = async (
+    examId: string,
+    title: string,
+    qList: QuestionItem[],
+    durationMin: number,
+    chosenLang: StudyLanguage = examLang
+  ) => {
     const attemptId = `att-${Date.now()}`;
     setAnswers({});
     setSubmittedResult(null);
     setSecondsLeft(durationMin * 60);
-    setActiveExam({ id: examId, title, questions: qList, durationMinutes: durationMin, attemptId });
+    setActiveExam({ id: examId, title, questions: qList, durationMinutes: durationMin, attemptId, examLang: chosenLang });
     await onSaveAttempt({
       id: attemptId,
       userId: profile.uid,
@@ -88,7 +106,7 @@ export function ExamsView({
       .map((id) => scopedQuestions.find((q) => q.id === id))
       .filter((x): x is QuestionItem => Boolean(x));
     const finalQs = qList.length > 0 ? qList : scopedQuestions;
-    startExam(bp.id, lang === 'ar' ? bp.titleAr : bp.titleEn, finalQs, bp.durationMinutes);
+    startExam(bp.id, pickStudyText(bp.titleAr, bp.titleEn, examLang), finalQs, bp.durationMinutes, examLang);
   };
 
   const startCustomExam = () => {
@@ -100,9 +118,10 @@ export function ExamsView({
     if (picked.length === 0) return;
     startExam(
       'custom-exam',
-      lang === 'ar' ? 'امتحان تجريبي مخصص' : 'Custom Mock Exam',
+      pickStudyText('امتحان تجريبي مخصص', 'Custom Mock Exam', examLang),
       picked,
-      customMinutes
+      customMinutes,
+      examLang
     );
   };
 
@@ -128,7 +147,6 @@ export function ExamsView({
     const val = (rawAns || '').trim();
     if (!val) return false;
     if (q.type === 'numerical' && typeof q.numericValue === 'number') {
-      // Mathematical evaluation via mathjs + tolerance check
       try {
         const cleaned = val.replace(/[^\d.+\-*/^()eE]/g, '');
         if (!cleaned) return false;
@@ -172,17 +190,24 @@ export function ExamsView({
   };
 
   if (activeExam) {
+    const currentExamLang = activeExam.examLang;
     return (
       <div className="space-y-6 max-w-4xl mx-auto">
         <div className="rounded-2xl glass-panel border p-5 flex flex-wrap items-center justify-between gap-4 sticky top-20 z-20">
-          <div>
-            <h2 className="text-lg font-bold">{activeExam.title}</h2>
+          <div className="min-w-0">
+            <h2 className="text-lg font-bold truncate">{activeExam.title}</h2>
             <p className="text-xs text-slate-500 dark:text-slate-400 font-mono-num">
               {activeExam.questions.length} {lang === 'ar' ? 'أسئلة' : 'questions'} ·{' '}
               {lang === 'ar' ? 'يتم حفظ الإجابات تلقائيًا' : 'Auto-saving answers'}
             </p>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2.5">
+            <StudyLanguageSwitcher
+              value={currentExamLang}
+              onChange={(next) => setActiveExam((prev) => (prev ? { ...prev, examLang: next } : prev))}
+              uiLang={lang}
+              compact
+            />
             <span className="font-mono-num text-sm font-bold px-3 py-1.5 rounded-xl glass-subcard flex items-center gap-1.5">
               <Clock className="w-4 h-4 text-cyan-500" />
               {formatTimer(secondsLeft)}
@@ -190,7 +215,7 @@ export function ExamsView({
             {!submittedResult && (
               <button
                 onClick={handleSubmitExam}
-                className="px-4 py-2 rounded-xl glass-btn-primary text-xs font-semibold"
+                className="px-4 py-2 rounded-xl glass-btn-primary text-xs font-semibold cursor-pointer"
               >
                 {lang === 'ar' ? 'إنهاء وتصحيح الامتحان' : 'Submit & Grade'}
               </button>
@@ -206,20 +231,22 @@ export function ExamsView({
               </p>
               <p className="text-3xl font-bold font-mono-num mt-1">
                 {submittedResult.score} / {submittedResult.maxScore} (
-                {Math.round((submittedResult.score / submittedResult.maxScore) * 100)}%)
+                {Math.round((submittedResult.score / (submittedResult.maxScore || 1)) * 100)}%)
               </p>
             </div>
             <div className="flex gap-2">
               <button
-                onClick={() => startExam(activeExam.id, activeExam.title, activeExam.questions, activeExam.durationMinutes)}
-                className="px-4 py-2 rounded-xl glass-btn-primary text-xs font-semibold flex items-center gap-1.5"
+                onClick={() =>
+                  startExam(activeExam.id, activeExam.title, activeExam.questions, activeExam.durationMinutes, currentExamLang)
+                }
+                className="px-4 py-2 rounded-xl glass-btn-primary text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
               >
                 <RotateCcw className="w-3.5 h-3.5" />
                 {lang === 'ar' ? 'إعادة الامتحان' : 'Retake Exam'}
               </button>
               <button
                 onClick={() => setActiveExam(null)}
-                className="px-4 py-2 rounded-xl glass-btn-secondary text-xs font-semibold"
+                className="px-4 py-2 rounded-xl glass-btn-secondary text-xs font-semibold cursor-pointer"
               >
                 {lang === 'ar' ? 'العودة للامتحانات' : 'Back to Exams'}
               </button>
@@ -230,11 +257,11 @@ export function ExamsView({
         <div className="space-y-4">
           {activeExam.questions.map((q, idx) => {
             const graded = submittedResult?.details.find((d) => d.q.id === q.id);
+            const mergedOpts = mergeBilingualOptions(q.optionsAr, q.optionsEn, currentExamLang);
+            const correctOption = mergedOpts[Number(q.correctAnswer)];
+            const stepsLen = Math.max(q.stepsAr?.length || 0, q.stepsEn?.length || 0);
             return (
-              <div
-                key={q.id}
-                className="rounded-2xl glass-card p-6 space-y-3"
-              >
+              <div key={q.id} className="rounded-2xl glass-card p-6 space-y-3">
                 <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
                   <span>#{idx + 1}</span>
                   {graded && (
@@ -245,7 +272,13 @@ export function ExamsView({
                   )}
                 </div>
 
-                <p className="text-sm sm:text-base font-semibold">{lang === 'ar' ? q.textAr : q.textEn}</p>
+                <BilingualTextBlock
+                  ar={q.textAr}
+                  en={q.textEn}
+                  studyLang={currentExamLang}
+                  rich
+                  className="text-sm sm:text-base font-semibold"
+                />
 
                 {q.type === 'numerical' ? (
                   <div className="flex items-center gap-2">
@@ -262,34 +295,63 @@ export function ExamsView({
                   </div>
                 ) : (
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    {(lang === 'ar' ? q.optionsAr || [] : q.optionsEn || []).map((opt, oIdx) => (
+                    {mergedOpts.map((opt, oIdx) => (
                       <button
                         key={oIdx}
                         disabled={!!submittedResult}
                         onClick={() => handleAnswerChange(q.id, String(oIdx))}
-                        className={`p-3 rounded-xl border text-start text-xs font-medium transition-all ${
+                        className={`p-3 rounded-xl border text-start text-xs font-medium transition-all cursor-pointer ${
                           answers[q.id] === String(oIdx)
                             ? 'glass-btn-primary text-white'
                             : 'glass-btn-secondary'
                         }`}
                       >
-                        {opt}
+                        {currentExamLang === 'bilingual' && opt.ar !== opt.en ? (
+                          <div className="space-y-0.5">
+                            <p dir="rtl">{opt.ar}</p>
+                            <p dir="ltr" className="text-[11px] opacity-80">{opt.en}</p>
+                          </div>
+                        ) : (
+                          <span>{opt.single}</span>
+                        )}
                       </button>
                     ))}
                   </div>
                 )}
 
                 {submittedResult && (
-                  <div className="p-3.5 rounded-xl glass-subcard text-xs space-y-1">
+                  <div className="p-3.5 rounded-xl glass-subcard text-xs space-y-2">
                     <p className="font-semibold text-emerald-600 dark:text-emerald-400">
                       {lang === 'ar' ? 'الإجابة النموذجية:' : 'Correct Answer:'}{' '}
-                      {q.numericValue ??
-                        (lang === 'ar' ? q.optionsAr : q.optionsEn)?.[Number(q.correctAnswer)] ??
-                        q.correctAnswer}
+                      {typeof q.numericValue === 'number'
+                        ? `${q.numericValue} ${q.numericUnit || ''}`
+                        : correctOption
+                        ? pickStudyText(correctOption.ar, correctOption.en, currentExamLang)
+                        : q.correctAnswer}
                     </p>
-                    <p className="text-slate-600 dark:text-slate-300">
-                      {lang === 'ar' ? q.explanationAr : q.explanationEn}
-                    </p>
+                    <BilingualTextBlock
+                      ar={q.explanationAr}
+                      en={q.explanationEn}
+                      studyLang={currentExamLang}
+                      rich
+                      className="text-slate-600 dark:text-slate-300"
+                    />
+                    {stepsLen > 0 && (
+                      <ol className="space-y-1 pt-1.5 border-t border-slate-200/60 dark:border-white/10">
+                        {Array.from({ length: stepsLen }).map((_, sIdx) => (
+                          <li key={sIdx} className="flex items-start gap-1.5">
+                            <span className="font-mono-num font-bold text-cyan-500">{sIdx + 1}.</span>
+                            <BilingualTextBlock
+                              ar={q.stepsAr?.[sIdx] || q.stepsEn?.[sIdx] || ''}
+                              en={q.stepsEn?.[sIdx] || q.stepsAr?.[sIdx] || ''}
+                              studyLang={currentExamLang}
+                              rich
+                              className="text-xs"
+                            />
+                          </li>
+                        ))}
+                      </ol>
+                    )}
                   </div>
                 )}
               </div>
@@ -303,14 +365,24 @@ export function ExamsView({
   return (
     <div className="space-y-6 max-w-5xl mx-auto">
       <div className="rounded-2xl glass-card p-6 space-y-4">
-        <h1 className="text-2xl font-bold">
-          {lang === 'ar' ? 'نظام الامتحانات والاختبارات التفاعلية' : 'Exams & Assessments System'}
-        </h1>
-        <p className="text-sm text-slate-600 dark:text-slate-400">
-          {lang === 'ar'
-            ? 'اختبارات مخصصة لصفك ونظامك التعليمي، مع تصحيح رياضي دقيق للمسائل الحسابية وحفظ المحاولات.'
-            : 'Track-scoped assessments with mathematical tolerance grading for numerical problems and automatic attempt history.'}
-        </p>
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+          <div>
+            <h1 className="text-2xl font-bold">
+              {lang === 'ar' ? 'نظام الامتحانات والاختبارات التفاعلية' : 'Exams & Assessments System'}
+            </h1>
+            <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">
+              {lang === 'ar'
+                ? 'اختبارات مخصصة لصفك ونظامك التعليمي، مع اختيار لغة الأسئلة والتصحيح الرياضي الدقيق وحفظ المحاولات.'
+                : 'Track-scoped assessments with selectable question language, mathematical tolerance grading, and attempt history.'}
+            </p>
+          </div>
+          <StudyLanguageSwitcher
+            value={examLang}
+            onChange={setExamLang}
+            uiLang={lang}
+            label={lang === 'ar' ? 'لغة أسئلة الامتحان:' : 'Exam Language:'}
+          />
+        </div>
 
         {/* Custom Exam Builder */}
         <div className="p-4 rounded-xl glass-subcard flex flex-wrap items-end gap-4">
@@ -346,7 +418,7 @@ export function ExamsView({
           </label>
           <button
             onClick={startCustomExam}
-            className="px-4 py-2 rounded-xl glass-btn-primary text-xs font-semibold flex items-center gap-1.5"
+            className="px-4 py-2 rounded-xl glass-btn-primary text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
           >
             <Play className="w-3.5 h-3.5" />
             {lang === 'ar' ? 'إنشاء وبدء امتحان تجريبي' : 'Generate Custom Exam'}
@@ -362,11 +434,17 @@ export function ExamsView({
               <p className="text-xs text-blue-600 dark:text-cyan-400 font-medium uppercase">
                 {bp.examType} · {bp.durationMinutes} {lang === 'ar' ? 'دقيقة' : 'min'}
               </p>
-              <h3 className="text-base font-bold mt-1">{lang === 'ar' ? bp.titleAr : bp.titleEn}</h3>
+              <BilingualTitle
+                ar={bp.titleAr}
+                en={bp.titleEn}
+                studyLang={examLang}
+                as="h3"
+                className="text-base font-bold mt-1"
+              />
             </div>
             <button
               onClick={() => startBlueprintExam(bp)}
-              className="w-full py-2.5 rounded-xl glass-btn-primary text-xs font-semibold"
+              className="w-full py-2.5 rounded-xl glass-btn-primary text-xs font-semibold cursor-pointer"
             >
               {lang === 'ar' ? 'بدء الامتحان' : 'Start Exam'}
             </button>
@@ -395,3 +473,4 @@ export function ExamsView({
     </div>
   );
 }
+

@@ -1,9 +1,12 @@
 import React, { useMemo, useRef, useState } from 'react';
-import { Language, SavedGraph, UserProfile } from '../types/physics';
+import { Language, SavedGraph, StudyLanguage, UserProfile } from '../types/physics';
+import { BilingualTextBlock } from './BilingualBlock';
+import { pickStudyText } from '../lib/bilingual';
 import { Download, Plus, Save, Trash2 } from 'lucide-react';
 
 interface GraphingToolViewProps {
   lang: Language;
+  studyLang: StudyLanguage;
   profile: UserProfile;
   savedGraphs: SavedGraph[];
   onSaveGraph: (graph: SavedGraph) => Promise<void>;
@@ -112,13 +115,14 @@ const PRESETS: Record<
 
 export function GraphingToolView({
   lang,
+  studyLang,
   profile,
   savedGraphs,
   onSaveGraph,
   onDeleteGraph,
 }: GraphingToolViewProps) {
   const [graphType, setGraphType] = useState<string>('v_t');
-  const [title, setTitle] = useState('Velocity vs Time Experiment');
+  const [title, setTitle] = useState(() => pickStudyText(PRESETS.v_t.labelAr, PRESETS.v_t.labelEn, studyLang));
   const [xLabel, setXLabel] = useState(PRESETS.v_t.xLabel);
   const [yLabel, setYLabel] = useState(PRESETS.v_t.yLabel);
   const [points, setPoints] = useState<Array<{ x: number; y: number }>>(PRESETS.v_t.points);
@@ -131,7 +135,7 @@ export function GraphingToolView({
     setXLabel(p.xLabel);
     setYLabel(p.yLabel);
     setPoints(p.points);
-    setTitle(lang === 'ar' ? p.labelAr : p.labelEn);
+    setTitle(pickStudyText(p.labelAr, p.labelEn, studyLang));
   };
 
   // Mathematical computations: linear regression slope, R^2, trapezoidal area under curve
@@ -258,7 +262,7 @@ export function GraphingToolView({
                   : 'glass-btn-secondary text-slate-600 dark:text-slate-300'
               }`}
             >
-              {lang === 'ar' ? p.labelAr : p.labelEn}
+              {pickStudyText(p.labelAr, p.labelEn, studyLang)}
             </button>
           ))}
         </div>
@@ -323,12 +327,22 @@ export function GraphingToolView({
             </div>
           </div>
 
-          <div className="rounded-2xl glass-card p-5 text-xs space-y-1.5">
+          <div className="rounded-2xl glass-card p-5 text-xs space-y-2.5">
             <p className="font-bold text-blue-600 dark:text-cyan-400">
               {lang === 'ar' ? 'التفسير الفيزيائي للنموذج:' : 'Physical Interpretation:'}
             </p>
-            <p>{lang === 'ar' ? presetInfo.slopeMeaningAr : presetInfo.slopeMeaningEn}</p>
-            <p>{lang === 'ar' ? presetInfo.areaMeaningAr : presetInfo.areaMeaningEn}</p>
+            <BilingualTextBlock
+              ar={presetInfo.slopeMeaningAr}
+              en={presetInfo.slopeMeaningEn}
+              studyLang={studyLang}
+              rich
+            />
+            <BilingualTextBlock
+              ar={presetInfo.areaMeaningAr}
+              en={presetInfo.areaMeaningEn}
+              studyLang={studyLang}
+              rich
+            />
           </div>
         </div>
 

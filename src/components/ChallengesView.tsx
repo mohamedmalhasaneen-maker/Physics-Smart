@@ -1,9 +1,12 @@
 import React, { useState } from 'react';
-import { ChallengeItem, Language, LeaderboardEntry, UserProfile } from '../types/physics';
+import { ChallengeItem, Language, LeaderboardEntry, StudyLanguage, UserProfile } from '../types/physics';
+import { BilingualTextBlock, BilingualTitle } from './BilingualBlock';
+import { mergeBilingualOptions } from '../lib/bilingual';
 import { Award, CheckCircle2, Flame, Trophy } from 'lucide-react';
 
 interface ChallengesViewProps {
   lang: Language;
+  studyLang: StudyLanguage;
   profile: UserProfile;
   challenges: ChallengeItem[];
   leaderboard: LeaderboardEntry[];
@@ -12,6 +15,7 @@ interface ChallengesViewProps {
 
 export function ChallengesView({
   lang,
+  studyLang,
   profile,
   challenges,
   leaderboard,
@@ -96,19 +100,33 @@ export function ChallengesView({
           {challenges.map((ch) => {
             const q = ch.question;
             const fb = feedback[ch.id];
+            const mergedOptions = mergeBilingualOptions(q.optionsAr, q.optionsEn, studyLang);
             return (
               <div key={ch.id} className="rounded-2xl glass-card p-6 space-y-3">
-                <div className="flex items-center justify-between text-xs">
-                  <span className="font-bold text-blue-600 dark:text-cyan-400 flex items-center gap-2">
-                    <span className="glass-icon glass-icon-cyan w-7 h-7">
+                <div className="flex items-start justify-between gap-3 text-xs">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="glass-icon glass-icon-cyan w-7 h-7 shrink-0">
                       <Flame className="w-3.5 h-3.5" />
                     </span>
-                    {lang === 'ar' ? ch.titleAr : ch.titleEn}
-                  </span>
-                  <span className="font-mono-num font-semibold">+{ch.points} pts</span>
+                    <BilingualTitle
+                      ar={ch.titleAr}
+                      en={ch.titleEn}
+                      studyLang={studyLang}
+                      as="span"
+                      className="font-bold text-blue-600 dark:text-cyan-400 text-xs"
+                      subClassName="text-[11px] text-slate-500 dark:text-cyan-300/80"
+                    />
+                  </div>
+                  <span className="font-mono-num font-semibold shrink-0">+{ch.points} pts</span>
                 </div>
 
-                <p className="text-sm font-medium leading-relaxed">{lang === 'ar' ? q.textAr : q.textEn}</p>
+                <BilingualTextBlock
+                  ar={q.textAr}
+                  en={q.textEn}
+                  studyLang={studyLang}
+                  rich
+                  className="text-sm font-medium leading-relaxed"
+                />
 
                 {q.type === 'numerical' ? (
                   <div className="flex items-center gap-2">
@@ -125,7 +143,7 @@ export function ChallengesView({
                   </div>
                 ) : (
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    {(lang === 'ar' ? q.optionsAr || [] : q.optionsEn || []).map((opt, idx) => (
+                    {mergedOptions.map((opt, idx) => (
                       <button
                         key={idx}
                         disabled={!!solvedIds[ch.id]}
@@ -136,7 +154,16 @@ export function ChallengesView({
                             : 'glass-btn-secondary'
                         }`}
                       >
-                        {opt}
+                        {studyLang === 'bilingual' ? (
+                          <div className="space-y-0.5">
+                            <span dir="rtl" className="block">{opt.ar}</span>
+                            {opt.en && opt.en !== opt.ar && (
+                              <span dir="ltr" className="block text-[11px] opacity-80">{opt.en}</span>
+                            )}
+                          </div>
+                        ) : (
+                          <span dir={studyLang === 'ar' ? 'rtl' : 'ltr'}>{opt.single}</span>
+                        )}
                       </button>
                     ))}
                   </div>
@@ -156,6 +183,21 @@ export function ChallengesView({
                     </span>
                   )}
                 </div>
+
+                {solvedIds[ch.id] && (q.explanationAr || q.explanationEn) && (
+                  <div className="glass-subcard rounded-xl p-3 text-xs space-y-1">
+                    <p className="font-semibold text-emerald-600 dark:text-emerald-400">
+                      {lang === 'ar' ? 'التفسير العلمي:' : 'Scientific Explanation:'}
+                    </p>
+                    <BilingualTextBlock
+                      ar={q.explanationAr}
+                      en={q.explanationEn}
+                      studyLang={studyLang}
+                      rich
+                      className="text-slate-600 dark:text-slate-300"
+                    />
+                  </div>
+                )}
               </div>
             );
           })}
