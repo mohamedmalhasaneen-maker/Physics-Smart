@@ -1149,12 +1149,7 @@ export default function App() {
     },
   ];
 
-  if (profile.role === 'admin') {
-    navGroups.push({
-      groupLabel: t.groups.admin,
-      items: [{ id: 'admin', label: t.nav.admin, icon: <Shield className="w-4 h-4" /> }],
-    });
-  }
+  // Admin nav section removed per user request
 
   const openLesson = (lessonId: string) => {
     setSelectedLessonId(lessonId);

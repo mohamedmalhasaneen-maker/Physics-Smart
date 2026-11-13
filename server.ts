@@ -163,7 +163,7 @@ ${lessonContext ? `\nAPPROVED PLATFORM LESSON CONTEXT:\n${lessonContext.slice(0,
     }));
 
     const response = await ai.models.generateContent({
-      model: 'gemini-4-hydrogen',
+      model: 'gemini-2.5-flash',
       contents: [...formattedHistory, { role: 'user', parts }],
       config: {
         systemInstruction,
@@ -173,9 +173,11 @@ ${lessonContext ? `\nAPPROVED PLATFORM LESSON CONTEXT:\n${lessonContext.slice(0,
       },
     });
 
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.json({ reply: response.text || '' });
   } catch (err: any) {
     console.error('AI Tutor Error:', err);
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.status(500).json({ error: err?.message || 'Failed to generate AI tutor response.' });
   }
 });
@@ -238,7 +240,7 @@ ${givensSummary}`;
     parts.push({ text: prompt });
 
     const response = await ai.models.generateContent({
-      model: 'gemini-4-hydrogen',
+      model: 'gemini-2.5-flash',
       contents: { parts },
       config: {
         systemInstruction:
@@ -325,9 +327,11 @@ ${givensSummary}`;
       }
     }
 
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.json({ solution: parsed, mathVerification });
   } catch (err: any) {
     console.error('Solver Error:', err);
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.status(500).json({ error: err?.message || 'Failed to solve physics problem.' });
   }
 });
@@ -349,7 +353,7 @@ app.post('/api/ai/solver/explain-step', async (req, res) => {
         ? 'Arabic (with English physics terms in parentheses)'
         : 'English';
     const response = await ai.models.generateContent({
-      model: 'gemini-4-hydrogen',
+      model: 'gemini-2.5-flash',
       contents: `Explain this specific physics solution step clearly for a student who wants deeper understanding.
 Language: ${stepLangPrompt}
 Step: ${stepTitle}
@@ -360,8 +364,11 @@ Use clean LaTeX ($...$ or $$...$$) and verify all units.`,
         thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
       },
     });
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.json({ explanation: response.text || '' });
   } catch (err: any) {
+    console.error('Explain Step Error:', err);
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.status(500).json({ error: err?.message || 'Failed to explain step.' });
   }
 });

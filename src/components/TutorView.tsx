@@ -85,21 +85,24 @@ export function TutorView({
       .join('; ')}`;
   };
 
-  const sendMessage = async (e?: React.FormEvent) => {
+  const sendMessage = async (e?: React.FormEvent, customText?: string) => {
     e?.preventDefault();
-    if ((!inputText.trim() && !attachment) || loading) return;
+    const textToSend = customText !== undefined ? customText : (inputText.trim() || (lang === 'ar' ? 'حلل المرفق التالي.' : 'Please analyze this attachment.'));
+    if ((!textToSend && !attachment) || loading) return;
 
     const userMsg: TutorMessage = {
       id: `m-${Date.now()}`,
       role: 'user',
-      text: inputText.trim() || (lang === 'ar' ? 'حلل المرفق التالي.' : 'Please analyze this attachment.'),
+      text: textToSend,
       timestamp: new Date().toISOString(),
       attachmentName: attachment?.name,
     };
 
-    const nextMessages = [...messages, userMsg];
-    setMessages(nextMessages);
-    setInputText('');
+    const nextMessages = customText !== undefined ? messages : [...messages, userMsg];
+    if (customText === undefined) {
+      setMessages(nextMessages);
+      setInputText('');
+    }
     setLoading(true);
     setErrorMsg('');
 
@@ -117,12 +120,23 @@ export function TutorView({
           track: profile.track,
           grade: profile.grade,
           lessonContext: buildLessonContextString(),
-          history: messages.map((m) => ({ role: m.role, text: m.text })),
+          history: (customText !== undefined ? messages : nextMessages).slice(0, -1).map((m) => ({ role: m.role, text: m.text })),
           attachment: attachment ? { mimeType: attachment.mimeType, data: attachment.data } : undefined,
         }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'AI Tutor error');
+
+      const contentType = res.headers.get('content-type') || '';
+      let data: any = {};
+      if (contentType.includes('application/json')) {
+        data = await res.json();
+      } else {
+        const text = await res.text();
+        throw new Error(text.slice(0, 120) || `Server returned non-JSON response (${res.status})`);
+      }
+
+      if (!res.ok) {
+        throw new Error(data.error || data.message || `Server error (${res.status})`);
+      }
 
       const modelMsg: TutorMessage = {
         id: `m-${Date.now() + 1}`,
@@ -130,22 +144,26 @@ export function TutorView({
         text: data.reply,
         timestamp: new Date().toISOString(),
       };
-      const updatedMessages = [...nextMessages, modelMsg];
-      setMessages(updatedMessages);
+      const finalMessages = customText !== undefined ? [...messages, modelMsg] : [...nextMessages, modelMsg];
+      setMessages(finalMessages);
       setAttachment(null);
 
       // Persist session in Firestore
-      const sessionTitle = updatedMessages[0]?.text.slice(0, 60) || 'Physics Session';
+      const sessionTitle = finalMessages[0]?.text.slice(0, 60) || 'Physics Session';
       await onSaveSession({
         id: activeSessionId,
         userId: profile.uid,
         title: sessionTitle,
         mode,
         track: profile.track === 'unset' ? 'thanawiya' : profile.track,
-        messagesJson: JSON.stringify(updatedMessages),
+        messagesJson: JSON.stringify(finalMessages),
       });
     } catch (err: any) {
-      setErrorMsg(err?.message || 'Error connecting to AI Tutor.');
+      console.error('Tutor error:', err);
+      setErrorMsg(err?.message || 'Error connecting to AI Tutor. Please try again.');
+      if (customText === undefined) {
+        setInputText(textToSend); // Restore user input so they don't lose it
+      }
     } finally {
       setLoading(false);
     }
@@ -428,7 +446,16 @@ export function TutorView({
         </div>
 
         {errorMsg && (
-          <p className="mx-5 mb-2 text-xs text-rose-500 bg-rose-500/10 rounded-xl p-2">{errorMsg}</p>
+          <div className="mx-5 mb-2 flex items-center justify-between text-xs text-rose-500 bg-rose-500/10 rounded-xl p-2.5">
+            <span>{errorMsg}</span>
+            <button
+              type="button"
+              onClick={() => sendMessage(undefined, inputText)}
+              className="px-2.5 py-1 rounded-lg bg-rose-500 text-white font-semibold hover:bg-rose-600 transition"
+            >
+              {lang === 'ar' ? 'إعادة المحاولة' : 'Retry'}
+            </button>
+          </div>
         )}
 
         <form onSubmit={sendMessage} className="p-4 border-t border-slate-200/70 dark:border-white/10 space-y-2.5">

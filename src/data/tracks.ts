@@ -47,7 +47,7 @@ export const EDUCATIONAL_TRACKS: TrackDefinition[] = [
     image: '/src/assets/images/track_waves_optics_lab_1794579389296.jpg',
     grades: [
       { id: 'bac_year1', labelAr: 'السنة الأولى - المسار العام', labelEn: 'Year 1 - Foundation Physics' },
-      { id: 'bac_year2_eng', labelAr: 'السنة الثانية - مسار الهندسة والعلوم', labelEn: 'Year 2 - Engineering & Physical Sciences' },
+      { id: 'bac_year2', labelAr: 'السنة الثانية - مسار طب وعلوم الحياة', labelEn: 'Year 2 - Life Sciences Track' },
       { id: 'bac_year3_adv', labelAr: 'السنة الثالثة - الفيزياء المتقدمة', labelEn: 'Year 3 - Advanced Baccalaureate Physics' },
     ],
   },
