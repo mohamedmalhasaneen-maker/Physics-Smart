@@ -11,6 +11,7 @@ import {
   isValidEmailAddress,
   linkWithCredential,
   linkWithPopup,
+  logDevAuthError,
   shouldFallbackToRedirect,
   signInWithPopup,
   signInWithRedirect,
@@ -122,11 +123,28 @@ export function AuthOnboarding({
   );
 
   useEffect(() => {
-    if (userProfile?.displayName && !editDisplayName) {
-      setEditDisplayName(userProfile.displayName);
+    if (!firebaseUser) {
+      setEditDisplayName('');
+      setSelectedTrack('thanawiya');
+      setSelectedGrade(EDUCATIONAL_TRACKS[0].grades[0].id);
+      setSelectedStudyLang(lang);
+      setLinkMsg('');
+      setErrorMsg('');
+      return;
     }
+    const nextTrack: TrackId =
+      userProfile?.track && userProfile.track !== 'unset' ? userProfile.track : 'thanawiya';
+    const nextTrackDef = EDUCATIONAL_TRACKS.find((tr) => tr.id === nextTrack) || EDUCATIONAL_TRACKS[0];
+    setEditDisplayName(userProfile?.displayName || firebaseUser?.displayName || '');
+    setSelectedTrack(nextTrack);
+    setSelectedGrade(userProfile?.grade || nextTrackDef.grades[0].id);
+    setSelectedStudyLang(
+      userProfile?.studyLang || (nextTrack === 'american' ? 'bilingual' : lang)
+    );
+    setLinkMsg('');
+    setErrorMsg('');
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userProfile?.displayName]);
+  }, [firebaseUser?.uid, userProfile?.uid, userProfile?.track, userProfile?.grade, userProfile?.studyLang, userProfile?.displayName]);
 
   useEffect(() => {
     if (initialPendingLink) {
@@ -212,7 +230,7 @@ export function AuthOnboarding({
     try {
       await signInWithRedirect(auth, googleProvider, browserPopupRedirectResolver);
     } catch (err: unknown) {
-      console.error('Google redirect start error:', extractFirebaseAuthCode(err), err);
+      logDevAuthError('google-redirect', err);
       setGoogleInfo('');
       setGoogleError(getAuthErrorMessage(err, lang));
       setBusy(false);
@@ -233,7 +251,7 @@ export function AuthOnboarding({
       await signInWithPopup(auth, googleProvider, browserPopupRedirectResolver);
     } catch (err: unknown) {
       const code = extractFirebaseAuthCode(err);
-      console.error('Google Sign-In error:', code, err);
+      logDevAuthError('google-popup', err);
 
       if (shouldFallbackToRedirect(err)) {
         setGoogleInfo(
@@ -245,7 +263,7 @@ export function AuthOnboarding({
           await signInWithRedirect(auth, googleProvider, browserPopupRedirectResolver);
           return;
         } catch (redirectErr: unknown) {
-          console.error('Google redirect fallback error:', extractFirebaseAuthCode(redirectErr), redirectErr);
+          logDevAuthError('google-redirect-fallback', redirectErr);
           setGoogleInfo('');
           setGoogleError(getAuthErrorMessage(redirectErr, lang));
           setShowRedirectFallback(true);
@@ -292,17 +310,23 @@ export function AuthOnboarding({
     try {
       // Strictly use signInWithEmailAndPassword for existing-account login
       const cred = await signInWithEmailAndPassword(auth, cleanEmail, password);
-      if (pendingLinkCred?.credential && cred.user) {
+      if (
+        pendingLinkCred?.credential &&
+        cred.user &&
+        (!pendingLinkCred.email ||
+          cred.user.email?.toLowerCase() === pendingLinkCred.email.toLowerCase())
+      ) {
         try {
           await linkWithCredential(cred.user, pendingLinkCred.credential);
         } catch (linkErr: unknown) {
-          console.warn('Auto-link Google credential after Email sign-in warning:', linkErr);
+          logDevAuthError('link-google-credential', linkErr);
         } finally {
           setPendingLinkCred(null);
           onClearRedirectError?.();
         }
       }
     } catch (err: unknown) {
+      logDevAuthError('email-signin', err);
       setErrorMsg(getAuthErrorMessage(err, lang));
     } finally {
       setBusy(false);
@@ -434,6 +458,7 @@ export function AuthOnboarding({
           : 'Google account linked successfully! You can now sign in with one click anytime.'
       );
     } catch (err: unknown) {
+      logDevAuthError('google-link-popup', err);
       setErrorMsg(getAuthErrorMessage(err, lang));
     } finally {
       setBusy(false);

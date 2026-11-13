@@ -24,9 +24,11 @@ import {
   GoogleAuthProvider,
   handleFirestoreError,
   isFirestoreOfflineError,
+  logDevAuthError,
   OperationType,
   serverTimestamp,
   signOut,
+  syncAuthLanguage,
   testFirestoreConnection,
   updateProfile,
 } from './lib/firebase';
@@ -140,12 +142,13 @@ export default function App() {
     },
   ]);
 
-  // Sync HTML dir/lang/theme
+  // Sync HTML dir/lang/theme & Firebase Auth localization
   useEffect(() => {
     const root = document.documentElement;
     root.dir = lang === 'ar' ? 'rtl' : 'ltr';
     root.lang = lang;
     root.classList.toggle('dark', theme === 'dark');
+    syncAuthLanguage(lang);
   }, [lang, theme]);
 
   const signupInFlightRef = React.useRef(false);
@@ -160,6 +163,15 @@ export default function App() {
     return clean.length <= 500 ? clean : '';
   };
 
+  const sanitizeEmail = (user: User): string => {
+    const candidate = (
+      user.email ||
+      user.providerData?.find((p) => p.email)?.email ||
+      `${user.uid}@google.user`
+    ).trim();
+    return (candidate.length >= 3 ? candidate : `${user.uid}@google.user`).slice(0, 200);
+  };
+
   // Initial Firestore connection test + Google redirect completion + Auth listener
   useEffect(() => {
     testFirestoreConnection();
@@ -169,22 +181,29 @@ export default function App() {
     window.addEventListener('online', handleOnline);
 
     // Inspect redirect sign-in result if returning from signInWithRedirect
-    getRedirectResult(auth, browserPopupRedirectResolver).catch(async (err) => {
-      console.error('Google redirect sign-in error:', err);
-      const code =
-        err && typeof err === 'object' && 'code' in err && typeof (err as any).code === 'string'
-          ? (err as any).code.toLowerCase()
-          : '';
-      if (code === 'auth/account-exists-with-different-credential') {
-        const pendingCred = GoogleAuthProvider.credentialFromError(err);
-        const conflictEmail = typeof (err as any)?.customData?.email === 'string' ? (err as any).customData.email : '';
-        const methods = conflictEmail ? await fetchSignInMethodsForEmail(auth, conflictEmail).catch(() => []) : [];
-        if (pendingCred) {
-          setRedirectPendingLink({ credential: pendingCred, email: conflictEmail, methods });
+    getRedirectResult(auth, browserPopupRedirectResolver)
+      .then((result) => {
+        if (result?.user) {
+          setRedirectAuthError(null);
+          setRedirectPendingLink(null);
         }
-      }
-      setRedirectAuthError(err);
-    });
+      })
+      .catch(async (err) => {
+        logDevAuthError('getRedirectResult', err);
+        const code =
+          err && typeof err === 'object' && 'code' in err && typeof (err as any).code === 'string'
+            ? (err as any).code.toLowerCase()
+            : '';
+        if (code === 'auth/account-exists-with-different-credential') {
+          const pendingCred = GoogleAuthProvider.credentialFromError(err);
+          const conflictEmail = typeof (err as any)?.customData?.email === 'string' ? (err as any).customData.email : '';
+          const methods = conflictEmail ? await fetchSignInMethodsForEmail(auth, conflictEmail).catch(() => []) : [];
+          if (pendingCred) {
+            setRedirectPendingLink({ credential: pendingCred, email: conflictEmail, methods });
+          }
+        }
+        setRedirectAuthError(err);
+      });
 
     const unsub = onAuthStateChanged(auth, async (user) => {
       setFirebaseUser(user);
@@ -211,13 +230,14 @@ export default function App() {
         return;
       }
 
-      const safeName = sanitizeDisplayName(user.displayName, user.email);
+      const safeEmail = sanitizeEmail(user);
+      const safeName = sanitizeDisplayName(user.displayName, safeEmail);
       const safePhoto = sanitizePhotoUrl(user.photoURL);
       const isBootstrapAdmin = user.email === ADMIN_BOOTSTRAP_EMAIL && user.emailVerified;
       const fallbackProfile: UserProfile = {
         uid: user.uid,
         displayName: safeName,
-        email: (user.email || '').slice(0, 200),
+        email: safeEmail,
         photoURL: safePhoto,
         track: 'unset',
         grade: '',
@@ -700,10 +720,11 @@ export default function App() {
         );
       } else {
         const isBootstrapAdmin = firebaseUser.email === ADMIN_BOOTSTRAP_EMAIL && firebaseUser.emailVerified;
+        const safeEmail = sanitizeEmail(firebaseUser);
         const createdProfile: UserProfile = {
           uid: firebaseUser.uid,
-          displayName: trimmedName || sanitizeDisplayName(firebaseUser.displayName, firebaseUser.email),
-          email: (firebaseUser.email || '').slice(0, 200),
+          displayName: trimmedName || sanitizeDisplayName(firebaseUser.displayName, safeEmail),
+          email: safeEmail,
           photoURL: sanitizePhotoUrl(firebaseUser.photoURL),
           track,
           grade,

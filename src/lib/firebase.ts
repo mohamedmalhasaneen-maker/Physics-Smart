@@ -47,6 +47,16 @@ export const db: Firestore = (() => {
 })();
 
 export const auth = getAuth(app);
+auth.useDeviceLanguage();
+
+export function syncAuthLanguage(lang: Language): void {
+  try {
+    auth.languageCode = lang;
+  } catch {
+    // non-blocking
+  }
+}
+
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.addScope('profile');
 googleProvider.addScope('email');
@@ -83,6 +93,13 @@ export function shouldFallbackToRedirect(error: unknown): boolean {
     code === 'auth/operation-not-supported-in-this-environment' ||
     code === 'auth/web-storage-unsupported'
   );
+}
+
+export function logDevAuthError(context: string, error: unknown): void {
+  if (typeof import.meta !== 'undefined' && import.meta.env?.DEV) {
+    const code = extractFirebaseAuthCode(error);
+    console.error(`[Physics Smart Auth][${context}] code=${code || 'unknown'}`, error);
+  }
 }
 
 export function getAuthErrorMessage(error: unknown, lang: Language): string {
