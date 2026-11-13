@@ -3,13 +3,20 @@ import {
   getAuth,
   GoogleAuthProvider,
   browserLocalPersistence,
+  browserPopupRedirectResolver,
   setPersistence,
   signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
   sendPasswordResetEmail,
+  fetchSignInMethodsForEmail,
+  linkWithCredential,
+  linkWithPopup,
   updateProfile,
   signOut,
+  type AuthCredential,
 } from 'firebase/auth';
 import {
   getFirestore,
@@ -41,6 +48,11 @@ export const db: Firestore = (() => {
 
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
+googleProvider.addScope('profile');
+googleProvider.addScope('email');
+googleProvider.setCustomParameters({
+  prompt: 'select_account',
+});
 
 // Ensure user authentication session persists securely across browser reloads
 setPersistence(auth, browserLocalPersistence).catch(() => {
@@ -57,16 +69,27 @@ export function isValidEmailAddress(email: string): boolean {
 
 export function extractFirebaseAuthCode(error: unknown): string {
   if (error && typeof error === 'object' && 'code' in error && typeof (error as any).code === 'string') {
-    return (error as any).code;
+    return (error as any).code.toLowerCase();
   }
   const msg = error instanceof Error ? error.message : String(error || '');
   const match = msg.match(/auth\/[a-z0-9-]+/i);
   return match ? match[0].toLowerCase() : '';
 }
 
+export function shouldFallbackToRedirect(error: unknown): boolean {
+  const code = extractFirebaseAuthCode(error);
+  return (
+    code === 'auth/popup-blocked' ||
+    code === 'auth/operation-not-supported-in-this-environment' ||
+    code === 'auth/web-storage-unsupported'
+  );
+}
+
 export function getAuthErrorMessage(error: unknown, lang: Language): string {
   const code = extractFirebaseAuthCode(error);
+  const rawMessage = error instanceof Error ? error.message : String(error || '');
   const isAr = lang === 'ar';
+  const currentHost = typeof window !== 'undefined' ? window.location.hostname : '';
 
   switch (code) {
     case 'auth/email-already-in-use':
@@ -92,39 +115,67 @@ export function getAuthErrorMessage(error: unknown, lang: Language): string {
     case 'auth/invalid-credential':
     case 'auth/invalid-login-credentials':
       return isAr
-        ? 'بيانات الدخول غير صحيحة. تأكد من البريد الإلكتروني وكلمة المرور، أو قم باستعادة كلمة المرور.'
-        : 'Invalid email or password. Please verify your credentials or reset your password.';
+        ? 'بيانات الاعتماد غير صالحة أو منتهية الصلاحية (auth/invalid-credential). تأكد من البريد وكلمة المرور أو أعد المحاولة بحساب Google.'
+        : 'Invalid or expired authentication credential (auth/invalid-credential). Verify your email/password or try Google sign-in again.';
+    case 'auth/unauthorized-domain':
+      return isAr
+        ? `النطاق الحالي (${currentHost || 'unknown'}) غير مضاف في قائمة النطاقات المصرح بها (Authorized Domains) داخل إعدادات Firebase Authentication. أضف النطاق من Firebase Console ثم أعد المحاولة.`
+        : `The current domain (${currentHost || 'unknown'}) is not in Firebase Authentication Authorized Domains. Add this domain in Firebase Console > Authentication > Settings > Authorized domains.`;
+    case 'auth/account-exists-with-different-credential':
+      return isAr
+        ? 'هذا البريد الإلكتروني مسجل مسبقًا بطريقة دخول أخرى (مثل البريد وكلمة المرور). سجّل الدخول بطريقتك السابقة ليتم ربط حساب Google تلقائيًا بنفس الحساب دون فقدان بياناتك.'
+        : 'An account already exists with this email using another sign-in method (such as Email/Password). Sign in with your original method to link Google automatically without losing data.';
+    case 'auth/credential-already-in-use':
+      return isAr
+        ? 'حساب Google هذا مرتبط بالفعل بحساب طالب آخر في المنصة.'
+        : 'This Google credential is already linked to another student account.';
     case 'auth/network-request-failed':
       return isAr
-        ? 'فشل الاتصال بالشبكة. يرجى التحقق من اتصالك بالإنترنت ثم المحاولة مرة أخرى.'
-        : 'Network request failed. Please check your internet connection and try again.';
+        ? 'فشل الاتصال بخوادم المصادقة (auth/network-request-failed). تحقق من اتصالك بالإنترنت أو تعطيل مانع الإعلانات ثم أعد المحاولة.'
+        : 'Network request failed while reaching authentication servers (auth/network-request-failed). Check your connection or ad-blocker and try again.';
+    case 'auth/internal-error':
+      return isAr
+        ? `حدث خطأ داخلي في مصادقة Firebase (auth/internal-error) قد يكون بسبب حظر ملفات تعريف الارتباط أو تقييد النوافذ المنبثقة. جرّب خيار تسجيل الدخول عبر إعادة التوجيه (Redirect).${rawMessage ? ` [${rawMessage}]` : ''}`
+        : `Firebase Authentication internal error (auth/internal-error), often caused by blocked third-party cookies or restricted popups. Try the Redirect sign-in option.${rawMessage ? ` [${rawMessage}]` : ''}`;
     case 'auth/too-many-requests':
       return isAr
-        ? 'تم حظر المحاولات مؤقتًا بسبب كثرة المحاولات المتكررة. انتظر قليلًا ثم أعد المحاولة.'
-        : 'Too many attempts detected. Please wait a short moment before trying again.';
+        ? 'تم إيقاف المحاولات مؤقتًا بسبب كثرة الطلبات المتكررة (auth/too-many-requests). انتظر قليلًا ثم أعد المحاولة.'
+        : 'Too many requests detected (auth/too-many-requests). Please wait a short moment before trying again.';
     case 'auth/user-disabled':
       return isAr
         ? 'تم إيقاف هذا الحساب مؤقتًا. يرجى التواصل مع إدارة المنصة.'
         : 'This user account has been disabled. Please contact platform administration.';
     case 'auth/operation-not-allowed':
       return isAr
-        ? 'خدمة التسجيل بالبريد الإلكتروني وكلمة المرور غير مفعّلة في إعدادات مشروع Firebase حاليًا. فعّل Email/Password في Firebase Console أو سجّل الدخول عبر Google.'
-        : 'Email/Password sign-in is currently disabled in Firebase Console. Enable Email/Password under Authentication > Sign-in method or continue with Google.';
+        ? 'مزود تسجيل الدخول المطلوب غير مفعّل في إعدادات مشروع Firebase (auth/operation-not-allowed). تأكد من تفعيل Google وEmail/Password في Firebase Console → Authentication → Sign-in method.'
+        : 'This sign-in provider is disabled in Firebase Console (auth/operation-not-allowed). Enable Google and Email/Password under Authentication > Sign-in method.';
     case 'auth/popup-closed-by-user':
-    case 'auth/cancelled-popup-request':
+    case 'auth/redirect-cancelled-by-user':
       return isAr
-        ? 'تم إغلاق نافذة تسجيل الدخول قبل إتمام العملية.'
-        : 'Sign-in window was closed before completion.';
+        ? 'تم إغلاق نافذة تسجيل الدخول بحساب Google قبل إتمام العملية. يمكنك المحاولة مرة أخرى أو استخدام خيار إعادة التوجيه.'
+        : 'Google sign-in window was closed before completion. You can try again or use Redirect sign-in.';
+    case 'auth/cancelled-popup-request':
+    case 'auth/redirect-operation-pending':
+      return isAr
+        ? 'هناك محاولة تسجيل دخول قيد التنفيذ حاليًا. أكمل النافذة المفتوحة أو أعد المحاولة بعد لحظة.'
+        : 'Another sign-in popup or redirect is already in progress. Complete it or try again in a moment.';
     case 'auth/popup-blocked':
       return isAr
-        ? 'حظر المتصفح النافذة المنبثقة. اسمح بالنوافذ المنبثقة أو استخدم تسجيل الدخول بالبريد الإلكتروني.'
-        : 'Browser blocked the sign-in popup. Allow popups or sign in with email and password.';
+        ? 'حظر المتصفح النافذة المنبثقة لـ Google (auth/popup-blocked). اسمح بالنوافذ المنبثقة أو استخدم تسجيل الدخول عبر إعادة التوجيه.'
+        : 'Browser blocked the Google sign-in popup (auth/popup-blocked). Allow popups or continue with Redirect sign-in.';
+    case 'auth/web-storage-unsupported':
+    case 'auth/operation-not-supported-in-this-environment':
+      return isAr
+        ? 'المتصفح الحالي يقيّد التخزين المحلي أو النوافذ المنبثقة. فعّل الكوكيز أو استخدم متصفح Chrome/Safari خارج وضع التصفح الخاص.'
+        : 'This browser restricts web storage or popups. Enable cookies/storage or open in Chrome/Safari outside private browsing.';
     case 'auth/missing-password':
       return isAr ? 'يرجى إدخال كلمة المرور.' : 'Please enter your password.';
-    default:
+    default: {
+      const detail = code || rawMessage;
       return isAr
-        ? 'تعذر إتمام العملية حاليًا. يرجى التحقق من البيانات المدخلة والمحاولة مرة أخرى.'
-        : 'Could not complete authentication right now. Please check your details and try again.';
+        ? `تعذر إتمام المصادقة${detail ? ` (${detail})` : ''}. تحقق من إعدادات Firebase واتصال الشبكة وحاول مرة أخرى.`
+        : `Authentication failed${detail ? ` (${detail})` : ''}. Verify Firebase configuration and network connection, then try again.`;
+    }
   }
 }
 
@@ -224,11 +275,19 @@ export async function testFirestoreConnection(): Promise<boolean> {
 }
 
 export {
+  GoogleAuthProvider,
+  browserPopupRedirectResolver,
   signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
   sendPasswordResetEmail,
+  fetchSignInMethodsForEmail,
+  linkWithCredential,
+  linkWithPopup,
   updateProfile,
   signOut,
   serverTimestamp,
+  type AuthCredential,
 };

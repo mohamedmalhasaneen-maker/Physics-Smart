@@ -1,11 +1,19 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   auth,
+  type AuthCredential,
+  browserPopupRedirectResolver,
   extractFirebaseAuthCode,
+  fetchSignInMethodsForEmail,
   getAuthErrorMessage,
+  GoogleAuthProvider,
   googleProvider,
   isValidEmailAddress,
+  linkWithCredential,
+  linkWithPopup,
+  shouldFallbackToRedirect,
   signInWithPopup,
+  signInWithRedirect,
   signInWithEmailAndPassword,
   sendPasswordResetEmail,
   signOut,
@@ -29,6 +37,12 @@ import {
   AlertCircle,
 } from 'lucide-react';
 
+interface PendingLinkState {
+  credential: AuthCredential;
+  email: string;
+  methods: string[];
+}
+
 interface AuthOnboardingProps {
   lang: Language;
   theme: ThemeMode;
@@ -36,6 +50,10 @@ interface AuthOnboardingProps {
   onToggleTheme: () => void;
   firebaseUser: any | null;
   userProfile: UserProfile | null;
+  initialAuthError?: unknown | null;
+  initialPendingLink?: PendingLinkState | null;
+  profileSyncWarning?: string | null;
+  onClearRedirectError?: () => void;
   onRegisterWithEmail: (input: {
     fullName: string;
     email: string;
@@ -60,6 +78,10 @@ export function AuthOnboarding({
   onToggleTheme,
   firebaseUser,
   userProfile,
+  initialAuthError,
+  initialPendingLink,
+  profileSyncWarning,
+  onClearRedirectError,
   onRegisterWithEmail,
   onSaveTrackSelection,
   onCancelSwitch,
@@ -80,6 +102,11 @@ export function AuthOnboarding({
   const [suggestSignIn, setSuggestSignIn] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [infoMsg, setInfoMsg] = useState('');
+  const [googleError, setGoogleError] = useState('');
+  const [googleInfo, setGoogleInfo] = useState('');
+  const [showRedirectFallback, setShowRedirectFallback] = useState(false);
+  const [pendingLinkCred, setPendingLinkCred] = useState<PendingLinkState | null>(null);
+  const [linkMsg, setLinkMsg] = useState('');
   const [busy, setBusy] = useState(false);
 
   const [editDisplayName, setEditDisplayName] = useState<string>(userProfile?.displayName || '');
@@ -94,6 +121,35 @@ export function AuthOnboarding({
     userProfile?.studyLang || (selectedTrack === 'american' ? 'bilingual' : lang)
   );
 
+  useEffect(() => {
+    if (userProfile?.displayName && !editDisplayName) {
+      setEditDisplayName(userProfile.displayName);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userProfile?.displayName]);
+
+  useEffect(() => {
+    if (initialPendingLink) {
+      setPendingLinkCred(initialPendingLink);
+      if (initialPendingLink.email) {
+        setEmail(initialPendingLink.email);
+      }
+      setAuthTab('signin');
+      setGoogleError(
+        getAuthErrorMessage({ code: 'auth/account-exists-with-different-credential' }, lang)
+      );
+      setShowRedirectFallback(false);
+    } else if (initialAuthError) {
+      const code = extractFirebaseAuthCode(initialAuthError);
+      setGoogleError(getAuthErrorMessage(initialAuthError, lang));
+      setShowRedirectFallback(
+        code === 'auth/internal-error' ||
+          code === 'auth/popup-blocked' ||
+          code === 'auth/popup-closed-by-user'
+      );
+    }
+  }, [initialAuthError, initialPendingLink, lang]);
+
   const switchAuthTab = (tab: 'signin' | 'signup' | 'reset') => {
     setAuthTab(tab);
     setErrorMsg('');
@@ -104,15 +160,109 @@ export function AuthOnboarding({
     }
   };
 
+  const handleAccountExistsConflict = async (err: unknown) => {
+    const credential =
+      err && typeof err === 'object'
+        ? GoogleAuthProvider.credentialFromError(err as Parameters<typeof GoogleAuthProvider.credentialFromError>[0])
+        : null;
+    const conflictEmail =
+      typeof (err as any)?.customData?.email === 'string'
+        ? (err as any).customData.email
+        : email.trim();
+    const methods = conflictEmail
+      ? await fetchSignInMethodsForEmail(auth, conflictEmail).catch(() => [])
+      : [];
+
+    if (conflictEmail) {
+      setEmail(conflictEmail);
+    }
+    if (credential) {
+      setPendingLinkCred({ credential, email: conflictEmail, methods });
+    }
+    setAuthTab('signin');
+    setSuggestSignIn(false);
+    setShowRedirectFallback(false);
+
+    const methodsLabel =
+      methods.length > 0
+        ? lang === 'ar'
+          ? ` (${methods.join(' / ')})`
+          : ` (${methods.join(' / ')})`
+        : '';
+
+    setGoogleError(
+      `${getAuthErrorMessage(err, lang)}${methodsLabel}`
+    );
+    setGoogleInfo(
+      lang === 'ar'
+        ? 'أدخل كلمة مرور حسابك الحالي في نموذج تسجيل الدخول بالأسفل ليتم ربط حساب Google تلقائيًا بنفس حسابك.'
+        : 'Enter your current account password below to sign in and automatically link your Google account.'
+    );
+  };
+
+  const handleGoogleRedirectSignIn = async () => {
+    setBusy(true);
+    setGoogleError('');
+    setGoogleInfo(
+      lang === 'ar'
+        ? 'جارٍ التحويل إلى صفحة تسجيل الدخول الآمنة من Google...'
+        : 'Redirecting to Google secure sign-in...'
+    );
+    onClearRedirectError?.();
+    try {
+      await signInWithRedirect(auth, googleProvider, browserPopupRedirectResolver);
+    } catch (err: unknown) {
+      console.error('Google redirect start error:', extractFirebaseAuthCode(err), err);
+      setGoogleInfo('');
+      setGoogleError(getAuthErrorMessage(err, lang));
+      setBusy(false);
+    }
+  };
+
   const handleGoogleSignIn = async () => {
     setBusy(true);
     setErrorMsg('');
     setInfoMsg('');
+    setGoogleError('');
+    setGoogleInfo('');
+    setShowRedirectFallback(false);
     setSuggestSignIn(false);
+    onClearRedirectError?.();
+
     try {
-      await signInWithPopup(auth, googleProvider);
+      await signInWithPopup(auth, googleProvider, browserPopupRedirectResolver);
     } catch (err: unknown) {
-      setErrorMsg(getAuthErrorMessage(err, lang));
+      const code = extractFirebaseAuthCode(err);
+      console.error('Google Sign-In error:', code, err);
+
+      if (shouldFallbackToRedirect(err)) {
+        setGoogleInfo(
+          lang === 'ar'
+            ? 'المتصفح حظر النافذة المنبثقة؛ جارٍ المتابعة عبر إعادة التوجيه الآمن...'
+            : 'Popup was blocked; continuing with secure redirect sign-in...'
+        );
+        try {
+          await signInWithRedirect(auth, googleProvider, browserPopupRedirectResolver);
+          return;
+        } catch (redirectErr: unknown) {
+          console.error('Google redirect fallback error:', extractFirebaseAuthCode(redirectErr), redirectErr);
+          setGoogleInfo('');
+          setGoogleError(getAuthErrorMessage(redirectErr, lang));
+          setShowRedirectFallback(true);
+        }
+      } else if (code === 'auth/account-exists-with-different-credential') {
+        await handleAccountExistsConflict(err);
+      } else {
+        setGoogleError(getAuthErrorMessage(err, lang));
+        if (
+          code === 'auth/internal-error' ||
+          code === 'auth/popup-closed-by-user' ||
+          code === 'auth/cancelled-popup-request' ||
+          code === 'auth/redirect-operation-pending'
+        ) {
+          setShowRedirectFallback(true);
+        }
+      }
     } finally {
       setBusy(false);
     }
@@ -141,7 +291,17 @@ export function AuthOnboarding({
     setBusy(true);
     try {
       // Strictly use signInWithEmailAndPassword for existing-account login
-      await signInWithEmailAndPassword(auth, cleanEmail, password);
+      const cred = await signInWithEmailAndPassword(auth, cleanEmail, password);
+      if (pendingLinkCred?.credential && cred.user) {
+        try {
+          await linkWithCredential(cred.user, pendingLinkCred.credential);
+        } catch (linkErr: unknown) {
+          console.warn('Auto-link Google credential after Email sign-in warning:', linkErr);
+        } finally {
+          setPendingLinkCred(null);
+          onClearRedirectError?.();
+        }
+      }
     } catch (err: unknown) {
       setErrorMsg(getAuthErrorMessage(err, lang));
     } finally {
@@ -260,6 +420,29 @@ export function AuthOnboarding({
       setBusy(false);
     }
   };
+
+  const handleLinkGoogleAccount = async () => {
+    if (!firebaseUser) return;
+    setBusy(true);
+    setErrorMsg('');
+    setLinkMsg('');
+    try {
+      await linkWithPopup(firebaseUser, googleProvider, browserPopupRedirectResolver);
+      setLinkMsg(
+        lang === 'ar'
+          ? 'تم ربط حساب Google بحسابك بنجاح! يمكنك استخدامه للدخول بنقرة واحدة لاحقًا.'
+          : 'Google account linked successfully! You can now sign in with one click anytime.'
+      );
+    } catch (err: unknown) {
+      setErrorMsg(getAuthErrorMessage(err, lang));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const hasGoogleLinked = Boolean(
+    firebaseUser?.providerData?.some((p: { providerId?: string }) => p.providerId === 'google.com')
+  );
 
   const DirArrow = lang === 'ar' ? ArrowLeft : ArrowRight;
 
@@ -389,6 +572,34 @@ export function AuthOnboarding({
                 <ShieldCheck className="w-4 h-4" />
                 {t.auth.googleBtn}
               </button>
+
+              {googleError && (
+                <div className="mt-3 text-xs text-rose-600 dark:text-rose-400 bg-rose-500/10 border border-rose-500/25 rounded-xl p-3 space-y-2">
+                  <div className="flex items-start gap-2">
+                    <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                    <span>{googleError}</span>
+                  </div>
+                  {showRedirectFallback && (
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={handleGoogleRedirectSignIn}
+                      className="w-full py-1.5 px-3 rounded-lg glass-btn-secondary text-xs font-semibold cursor-pointer"
+                    >
+                      {lang === 'ar'
+                        ? 'المحاولة عبر إعادة التوجيه (Redirect) بدلًا من النافذة المنبثقة'
+                        : 'Try Redirect Sign-In instead of Popup'}
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {googleInfo && (
+                <div className="mt-3 text-xs text-cyan-700 dark:text-cyan-300 bg-cyan-500/10 border border-cyan-500/25 rounded-xl p-3 flex items-start gap-2">
+                  <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
+                  <span>{googleInfo}</span>
+                </div>
+              )}
 
               <div className="my-5 flex items-center gap-3 text-xs text-slate-400">
                 <div className="flex-1 h-px bg-slate-200/70 dark:bg-white/10" />
@@ -831,6 +1042,44 @@ export function AuthOnboarding({
                   uiLang={lang}
                 />
               </div>
+
+              {profileSyncWarning && (
+                <div className="text-xs text-amber-700 dark:text-amber-300 bg-amber-500/10 border border-amber-500/25 rounded-xl p-3 flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                  <span>{profileSyncWarning}</span>
+                </div>
+              )}
+
+              {!hasGoogleLinked && (
+                <div className="rounded-xl glass-subcard p-3.5 flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-semibold text-slate-800 dark:text-slate-100">
+                      {lang === 'ar' ? 'ربط حساب Google' : 'Link Google Account'}
+                    </p>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                      {lang === 'ar'
+                        ? 'اربط حسابك بـ Google لتسجيل الدخول لاحقًا بنقرة واحدة دون فقدان تقدمك.'
+                        : 'Link your Google account for one-click sign-in next time without losing progress.'}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={handleLinkGoogleAccount}
+                    className="px-3.5 py-2 rounded-xl glass-btn-secondary text-xs font-semibold flex items-center gap-1.5 cursor-pointer disabled:opacity-60"
+                  >
+                    <ShieldCheck className="w-3.5 h-3.5 text-cyan-400" />
+                    <span>{lang === 'ar' ? 'ربط Google الآن' : 'Link Google'}</span>
+                  </button>
+                </div>
+              )}
+
+              {linkMsg && (
+                <p className="text-xs text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 border border-emerald-500/25 rounded-xl p-2.5 flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 shrink-0" />
+                  <span>{linkMsg}</span>
+                </p>
+              )}
 
               {errorMsg && (
                 <p className="text-xs text-rose-500 bg-rose-500/10 border border-rose-500/20 rounded-xl p-2.5">

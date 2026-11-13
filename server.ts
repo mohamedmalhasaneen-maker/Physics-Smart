@@ -13,6 +13,12 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = 3000;
 
+app.use((_req, res, next) => {
+  // Allow Firebase Auth signInWithPopup windows to communicate across origins safely
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
+  next();
+});
+
 app.use(express.json({ limit: '15mb' }));
 
 function getGeminiClient() {

@@ -15,8 +15,13 @@ import {
 import {
   ADMIN_BOOTSTRAP_EMAIL,
   auth,
+  type AuthCredential,
+  browserPopupRedirectResolver,
   createUserWithEmailAndPassword,
   db,
+  fetchSignInMethodsForEmail,
+  getRedirectResult,
+  GoogleAuthProvider,
   handleFirestoreError,
   isFirestoreOfflineError,
   OperationType,
@@ -97,6 +102,13 @@ export default function App() {
   const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [showTrackSwitcher, setShowTrackSwitcher] = useState(false);
+  const [redirectAuthError, setRedirectAuthError] = useState<unknown | null>(null);
+  const [redirectPendingLink, setRedirectPendingLink] = useState<{
+    credential: AuthCredential;
+    email: string;
+    methods: string[];
+  } | null>(null);
+  const [profileSyncWarning, setProfileSyncWarning] = useState<string | null>(null);
 
   const [activeSection, setActiveSection] = useState<NavSection>('dashboard');
   const [selectedLessonId, setSelectedLessonId] = useState<string | null>(null);
@@ -138,7 +150,17 @@ export default function App() {
 
   const signupInFlightRef = React.useRef(false);
 
-  // Initial Firestore connection test + Auth listener
+  const sanitizeDisplayName = (rawName?: string | null, email?: string | null): string => {
+    const candidate = (rawName || email?.split('@')[0] || 'Student').trim();
+    return (candidate || 'Student').slice(0, 120);
+  };
+
+  const sanitizePhotoUrl = (rawUrl?: string | null): string => {
+    const clean = (rawUrl || '').trim();
+    return clean.length <= 500 ? clean : '';
+  };
+
+  // Initial Firestore connection test + Google redirect completion + Auth listener
   useEffect(() => {
     testFirestoreConnection();
     const handleOnline = () => {
@@ -146,10 +168,29 @@ export default function App() {
     };
     window.addEventListener('online', handleOnline);
 
+    // Inspect redirect sign-in result if returning from signInWithRedirect
+    getRedirectResult(auth, browserPopupRedirectResolver).catch(async (err) => {
+      console.error('Google redirect sign-in error:', err);
+      const code =
+        err && typeof err === 'object' && 'code' in err && typeof (err as any).code === 'string'
+          ? (err as any).code.toLowerCase()
+          : '';
+      if (code === 'auth/account-exists-with-different-credential') {
+        const pendingCred = GoogleAuthProvider.credentialFromError(err);
+        const conflictEmail = typeof (err as any)?.customData?.email === 'string' ? (err as any).customData.email : '';
+        const methods = conflictEmail ? await fetchSignInMethodsForEmail(auth, conflictEmail).catch(() => []) : [];
+        if (pendingCred) {
+          setRedirectPendingLink({ credential: pendingCred, email: conflictEmail, methods });
+        }
+      }
+      setRedirectAuthError(err);
+    });
+
     const unsub = onAuthStateChanged(auth, async (user) => {
       setFirebaseUser(user);
       if (!user) {
         setProfile(null);
+        setProfileSyncWarning(null);
         setProgressMap({});
         setStudyTasks([]);
         setExamAttempts([]);
@@ -170,10 +211,27 @@ export default function App() {
         return;
       }
 
+      const safeName = sanitizeDisplayName(user.displayName, user.email);
+      const safePhoto = sanitizePhotoUrl(user.photoURL);
+      const isBootstrapAdmin = user.email === ADMIN_BOOTSTRAP_EMAIL && user.emailVerified;
+      const fallbackProfile: UserProfile = {
+        uid: user.uid,
+        displayName: safeName,
+        email: (user.email || '').slice(0, 200),
+        photoURL: safePhoto,
+        track: 'unset',
+        grade: '',
+        preferredLang: lang,
+        role: isBootstrapAdmin ? 'admin' : 'student',
+        points: 0,
+        level: 1,
+        badges: [],
+      };
+
       try {
         const userRef = doc(db, 'users', user.uid);
-        const isBootstrapAdmin = user.email === ADMIN_BOOTSTRAP_EMAIL && user.emailVerified;
         let snap;
+        let readFailed = false;
         try {
           snap = await getDoc(userRef);
         } catch (err) {
@@ -182,64 +240,85 @@ export default function App() {
             try {
               snap = await getDoc(userRef);
             } catch (retryErr) {
-              if (!isFirestoreOfflineError(retryErr)) {
-                handleFirestoreError(retryErr, OperationType.GET, `users/${user.uid}`);
-              }
+              readFailed = true;
+              console.warn('Firestore profile read paused while offline:', retryErr);
             }
           } else {
-            handleFirestoreError(err, OperationType.GET, `users/${user.uid}`);
+            readFailed = true;
+            console.error('Firestore profile read failed after auth:', err);
           }
         }
 
         if (snap && snap.exists()) {
           const data = snap.data() as UserProfile;
+          const resolvedRole = isBootstrapAdmin ? 'admin' : data.role;
+          const resolvedName = data.displayName?.trim() ? data.displayName : safeName;
+          const resolvedPhoto = safePhoto || data.photoURL || '';
           const resolvedProfile: UserProfile = {
             ...data,
-            role: isBootstrapAdmin ? 'admin' : data.role,
+            displayName: resolvedName,
+            photoURL: resolvedPhoto,
+            role: resolvedRole,
           };
           setProfile(resolvedProfile);
           if (data.preferredLang) setLang(data.preferredLang);
-        } else if (snap && !snap.exists()) {
-          const newProfile: UserProfile = {
-            uid: user.uid,
-            displayName: user.displayName || user.email?.split('@')[0] || 'Student',
-            email: user.email || '',
-            photoURL: user.photoURL || '',
-            track: 'unset',
-            grade: '',
-            preferredLang: lang,
-            role: isBootstrapAdmin ? 'admin' : 'student',
-            points: 0,
-            level: 1,
-            badges: [],
-          };
-          try {
-            await setDoc(userRef, {
-              ...newProfile,
-              createdAt: serverTimestamp(),
+
+          // Sync identity updates (without overwriting existing track, grade, points, level, badges, or createdAt)
+          const needsIdentitySync =
+            (!data.displayName?.trim() && resolvedName !== data.displayName) ||
+            (resolvedPhoto && resolvedPhoto !== (data.photoURL || '')) ||
+            (isBootstrapAdmin && data.role !== 'admin');
+
+          if (needsIdentitySync) {
+            const identityPatch: Record<string, any> = {
+              displayName: resolvedName.slice(0, 120),
+              photoURL: resolvedPhoto,
               updatedAt: serverTimestamp(),
-            });
-          } catch (err) {
-            if (!isFirestoreOfflineError(err)) {
-              handleFirestoreError(err, OperationType.CREATE, `users/${user.uid}`);
+            };
+            if (isBootstrapAdmin && data.role !== 'admin') {
+              identityPatch.role = 'admin';
             }
+            try {
+              await setDoc(userRef, identityPatch, { merge: true });
+              setProfileSyncWarning(null);
+            } catch (syncErr) {
+              console.warn('Non-blocking profile identity sync error:', syncErr);
+            }
+          } else {
+            setProfileSyncWarning(null);
           }
-          setProfile(newProfile);
+        } else if (snap && !snap.exists()) {
+          // First-time sign-in (e.g., Google OAuth): immediately unblock UI and sync profile cleanly
+          setProfile(fallbackProfile);
+          try {
+            await setDoc(
+              userRef,
+              {
+                ...fallbackProfile,
+                createdAt: serverTimestamp(),
+                updatedAt: serverTimestamp(),
+              },
+              { merge: true }
+            );
+            setProfileSyncWarning(null);
+          } catch (createErr) {
+            console.error('Non-blocking Firestore profile creation warning:', createErr);
+            setProfileSyncWarning(
+              lang === 'ar'
+                ? 'تم تسجيل دخولك بنجاح، لكن تعذر مزامنة ملفك مع قاعدة البيانات مؤقتًا. سيتم الحفظ عند اختيار المسار.'
+                : 'Signed in successfully, though syncing your cloud profile is temporarily delayed. It will retry when saving your track.'
+            );
+          }
         } else {
-          // Offline fallback without overwriting any existing server profile; onSnapshot will hydrate once online
-          setProfile({
-            uid: user.uid,
-            displayName: user.displayName || user.email?.split('@')[0] || 'Student',
-            email: user.email || '',
-            photoURL: user.photoURL || '',
-            track: 'unset',
-            grade: '',
-            preferredLang: lang,
-            role: isBootstrapAdmin ? 'admin' : 'student',
-            points: 0,
-            level: 1,
-            badges: [],
-          });
+          // Auth succeeded while Firestore read was unreachable/offline; allow user to continue without blocking Auth
+          setProfile(fallbackProfile);
+          if (readFailed) {
+            setProfileSyncWarning(
+              lang === 'ar'
+                ? 'تم تسجيل الدخول بنجاح. يتم العمل مؤقتًا حتى تستقر المزامنة السحابية لملفك الشخصي.'
+                : 'Signed in successfully. Cloud profile sync will automatically resume once connected.'
+            );
+          }
         }
       } finally {
         setAuthReady(true);
@@ -589,7 +668,7 @@ export default function App() {
   ) => {
     if (!firebaseUser) return;
     const ref = doc(db, 'users', firebaseUser.uid);
-    const trimmedName = displayName?.trim();
+    const trimmedName = displayName?.trim().slice(0, 120);
     const resolvedStudyLang: StudyLanguage =
       selectedStudyLang || (track === 'american' ? profile?.studyLang || 'bilingual' : lang);
     const updatePayload: Record<string, any> = {
@@ -601,18 +680,31 @@ export default function App() {
     };
     if (trimmedName) {
       updatePayload.displayName = trimmedName;
+      updateProfile(firebaseUser, { displayName: trimmedName }).catch(() => {});
     }
     try {
       const snap = await getDoc(ref);
       if (snap.exists()) {
-        await updateDoc(ref, updatePayload);
+        await setDoc(ref, updatePayload, { merge: true });
+        setProfile((prev) =>
+          prev
+            ? {
+                ...prev,
+                track,
+                grade,
+                preferredLang: lang,
+                studyLang: resolvedStudyLang,
+                ...(trimmedName ? { displayName: trimmedName } : {}),
+              }
+            : prev
+        );
       } else {
         const isBootstrapAdmin = firebaseUser.email === ADMIN_BOOTSTRAP_EMAIL && firebaseUser.emailVerified;
         const createdProfile: UserProfile = {
           uid: firebaseUser.uid,
-          displayName: trimmedName || firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'Student',
-          email: firebaseUser.email || '',
-          photoURL: firebaseUser.photoURL || '',
+          displayName: trimmedName || sanitizeDisplayName(firebaseUser.displayName, firebaseUser.email),
+          email: (firebaseUser.email || '').slice(0, 200),
+          photoURL: sanitizePhotoUrl(firebaseUser.photoURL),
           track,
           grade,
           preferredLang: lang,
@@ -622,13 +714,18 @@ export default function App() {
           level: 1,
           badges: [],
         };
-        await setDoc(ref, {
-          ...createdProfile,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
+        await setDoc(
+          ref,
+          {
+            ...createdProfile,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          },
+          { merge: true }
+        );
         setProfile(createdProfile);
       }
+      setProfileSyncWarning(null);
       setShowTrackSwitcher(false);
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `users/${firebaseUser.uid}`);
@@ -975,6 +1072,13 @@ export default function App() {
         onToggleTheme={() => setTheme((th) => (th === 'dark' ? 'light' : 'dark'))}
         firebaseUser={firebaseUser}
         userProfile={profile}
+        initialAuthError={redirectAuthError}
+        initialPendingLink={redirectPendingLink}
+        profileSyncWarning={profileSyncWarning}
+        onClearRedirectError={() => {
+          setRedirectAuthError(null);
+          setRedirectPendingLink(null);
+        }}
         onRegisterWithEmail={handleEmailSignUp}
         onSaveTrackSelection={handleSaveTrackSelection}
         onCancelSwitch={profile && profile.track !== 'unset' ? () => setShowTrackSwitcher(false) : undefined}
@@ -1207,6 +1311,18 @@ export default function App() {
         </header>
 
         <main key={activeSection} className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto glass-enter">
+          {profileSyncWarning && (
+            <div className="mb-4 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-xs text-amber-700 dark:text-amber-300 flex items-center justify-between gap-3">
+              <span>{profileSyncWarning}</span>
+              <button
+                type="button"
+                onClick={() => setProfileSyncWarning(null)}
+                className="px-2 py-1 rounded-lg glass-btn-secondary text-[11px] font-medium shrink-0"
+              >
+                {lang === 'ar' ? 'إغلاق' : 'Dismiss'}
+              </button>
+            </div>
+          )}
           {activeSection === 'dashboard' && (
             <DashboardView
               lang={lang}
