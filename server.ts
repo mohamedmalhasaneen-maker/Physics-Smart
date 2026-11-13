@@ -2,7 +2,7 @@ import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
-import { GoogleGenAI, Type, ThinkingLevel } from '@google/genai';
+import { GoogleGenAI, Type } from '@google/genai';
 import { evaluate } from 'mathjs';
 
 dotenv.config();
@@ -30,7 +30,7 @@ function getGeminiClient() {
     apiKey,
     httpOptions: {
       headers: {
-        'User-Agent': 'aistudio-build',
+        'User-Agent': 'physics-smart-aistudio',
       },
     },
   });
@@ -69,7 +69,7 @@ app.post('/api/math/verify', (req, res) => {
   }
 });
 
-// AI Physics Tutor Endpoint (3 Modes: tutor, analyzer, examiner)
+// AI Physics Tutor Endpoint using Gemini Interactions API (gemini-3.8-flash)
 app.post('/api/ai/tutor', async (req, res) => {
   try {
     const {
@@ -114,7 +114,7 @@ app.post('/api/ai/tutor', async (req, res) => {
 
     const modeInstructions =
       mode === 'tutor'
-        ? `You are in TUTOR MODE (وضع المدرس). Explain physics concepts from first principles using clear analogies, step-by-step derivations, symbol & unit definitions, and check the student's understanding with a gentle follow-up check.`
+        ? `You are in TUTOR MODE (وضع المدرس). Explain physics concepts from first principles using clear analogies, step-by-step derivations, symbol & unit definitions, and check the student's understanding with a gentle follow-up check. Use warm Egyptian Arabic teacher persona mixed with clear scientific terms.`
         : mode === 'analyzer'
         ? `You are in ANALYZER MODE (وضع المحلل). Dissect the problem or diagram rigorously: list Givens with units, Target, SI unit conversions, Formula selection rationale, Algebraic substitution, Numerical evaluation, and Physical sanity check.`
         : `You are in EXAMINER MODE (وضع الممتحن). Ask ONE challenging conceptual or numerical question appropriate to the student's track and wait for their attempt. NEVER reveal the final answer before the student attempts! If the message contains the student's attempt, grade it carefully, point out exact errors or unit mistakes, explain why, and then give the next question or follow-up.`;
@@ -122,11 +122,10 @@ app.post('/api/ai/tutor', async (req, res) => {
     const languageInstruction =
       language === 'bilingual'
         ? `BILINGUAL (Arabic + English): Respond clearly in BOTH Arabic and English! Provide:
-  (1) A complete, natural scientific Arabic explanation (العربية الفصحى العلمية) with key English physics terms in parentheses.
-  (2) Directly below or paired cleanly, an English Explanation section ("**English Explanation:**") covering the same reasoning and terminology in crisp academic English.
-  You MUST understand student inputs written in Arabic, English, or mixed Arabic-English (and images in either language).`
+  (1) A complete, natural scientific Arabic explanation (العربية الفصحى العلمية مع لمحة مدرس مصري مبسطة) with key English physics terms in parentheses.
+  (2) Directly below or paired cleanly, an English Explanation section ("**English Explanation:**") covering the same reasoning and terminology in crisp academic English.`
         : language === 'ar'
-        ? 'Arabic (العربية الفصحى العلمية الواضحة مع المصطلحات الإنجليزية الفيزيائية بين قوسين). Understand questions written in Arabic, English, or mixed Arabic-English.'
+        ? 'Arabic (اللهجة التعليمية الواضحة واللغة العربية الفصحى العلمية المبسطة مع المصطلحات الإنجليزية بين قوسين).'
         : 'English (clear academic English; understand questions written in Arabic, English, or mixed Arabic-English).';
 
     const systemInstruction = `You are Physics Smart AI Tutor (مدرس الفيزياء الذكي).
@@ -144,37 +143,42 @@ SCIENTIFIC ACCURACY RULES (MANDATORY):
 6. Format all equations in clean LaTeX wrapped in $$...$$ for display blocks or $...$ for inline formulas.
 ${lessonContext ? `\nAPPROVED PLATFORM LESSON CONTEXT:\n${lessonContext.slice(0, 6000)}` : ''}`;
 
-    const parts: any[] = [];
+    const conversationTranscript = (history || [])
+      .slice(-10)
+      .map((h) => `${h.role === 'user' ? 'Student' : 'Tutor'}: ${h.text}`)
+      .join('\n');
+
+    const inputParts: any[] = [];
     if (attachment?.data && attachment?.mimeType) {
-      parts.push({
-        inlineData: {
-          mimeType: attachment.mimeType,
-          data: attachment.data,
-        },
+      inputParts.push({
+        type: 'image',
+        data: attachment.data,
+        mime_type: attachment.mimeType,
       });
     }
-    if (message) {
-      parts.push({ text: message });
-    }
 
-    const formattedHistory = (history || []).slice(-10).map((h) => ({
-      role: h.role === 'model' ? 'model' : 'user',
-      parts: [{ text: h.text }],
-    }));
+    const promptText = conversationTranscript
+      ? `${conversationTranscript}\nStudent: ${message || (language === 'ar' ? 'حلل المرفق التالي.' : 'Analyze attachment.')}`
+      : (message || (language === 'ar' ? 'حلل المرفق التالي.' : 'Analyze attachment.'));
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: [...formattedHistory, { role: 'user', parts }],
-      config: {
-        systemInstruction,
-        thinkingConfig: {
-          thinkingLevel: detail === 'detailed' ? ThinkingLevel.HIGH : ThinkingLevel.LOW,
-        },
+    inputParts.push({
+      type: 'text',
+      text: promptText,
+    });
+
+    const interaction = await ai.interactions.create({
+      model: 'gemini-3.8-flash',
+      input: inputParts.length === 1 && inputParts[0].type === 'text' ? inputParts[0].text : inputParts,
+      system_instruction: systemInstruction,
+      generation_config: {
+        thinking_level: detail === 'detailed' ? 'high' : 'low',
       },
     });
 
+    const replyText = interaction.output_text || '';
+
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
-    res.json({ reply: response.text || '' });
+    res.json({ reply: replyText });
   } catch (err: any) {
     console.error('AI Tutor Error:', err);
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
@@ -182,7 +186,7 @@ ${lessonContext ? `\nAPPROVED PLATFORM LESSON CONTEXT:\n${lessonContext.slice(0,
   }
 });
 
-// Smart Physics Solver (11-step structured analysis + mathjs verification)
+// Smart Physics Solver using Gemini Interactions API (gemini-3.8-flash)
 app.post('/api/ai/solver', async (req, res) => {
   try {
     const {
@@ -215,12 +219,12 @@ app.post('/api/ai/solver', async (req, res) => {
 
     const solverLangDesc =
       language === 'bilingual'
-        ? 'BOTH Arabic and English (Bilingual mode): for every narrative field (clarificationQuestion, understanding, target, unitConversions, formulaReason, calculations, finalAnswerText, sanityCheck, and givens[].meaning), write a clear scientific Arabic line first followed by a newline and the matching English translation/terminology on the next line, while keeping selectedFormulaLatex and substitutionLatex pure LaTeX and verificationExpression pure mathjs arithmetic'
+        ? 'BOTH Arabic and English (Bilingual mode): for every narrative field, write a clear scientific Arabic line first followed by a newline and the matching English translation/terminology on the next line'
         : language === 'ar'
         ? 'Arabic (with standard English physics symbols/LaTeX and SI units)'
         : 'English';
 
-    const prompt = `Analyze and solve the following physics problem (which may be written in Arabic, English, or mixed text/image) for the ${track} curriculum in ${solverLangDesc}.
+    const prompt = `Analyze and solve the following physics problem for the ${track} curriculum in ${solverLangDesc}.
 If the problem is unclear or missing critical numerical data, set needsClarification=true and explain what is missing in clarificationQuestion.
 Otherwise, provide all 11 pedagogical steps accurately, plus a pure numeric mathjs-compatible arithmetic expression in "verificationExpression" (using only numbers, +, -, *, /, ^, sqrt, sin, cos, tan, pi) so our deterministic math engine can verify the final scalar result!
 
@@ -228,78 +232,100 @@ Problem:
 ${problemText}
 ${givensSummary}`;
 
-    const parts: any[] = [];
+    const inputParts: any[] = [];
     if (attachment?.data && attachment?.mimeType) {
-      parts.push({
-        inlineData: {
-          mimeType: attachment.mimeType,
-          data: attachment.data,
-        },
+      inputParts.push({
+        type: 'image',
+        data: attachment.data,
+        mime_type: attachment.mimeType,
       });
     }
-    parts.push({ text: prompt });
+    inputParts.push({
+      type: 'text',
+      text: prompt,
+    });
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: { parts },
-      config: {
-        systemInstruction:
-          'You are an exact Physics Problem Solver. Verify every unit conversion, state assumptions (like g=9.8 m/s^2), use standard LaTeX for formulas, and ensure arithmetic in verificationExpression matches the final numerical answer.',
-        thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH },
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            needsClarification: { type: Type.BOOLEAN },
-            clarificationQuestion: { type: Type.STRING },
-            understanding: { type: Type.STRING, description: 'Step 1: Understanding the physical scenario and assumptions' },
-            givens: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  symbol: { type: Type.STRING },
-                  value: { type: Type.STRING },
-                  unit: { type: Type.STRING },
-                  meaning: { type: Type.STRING },
-                },
+    const interaction = await ai.interactions.create({
+      model: 'gemini-3.8-flash',
+      input: inputParts.length === 1 && inputParts[0].type === 'text' ? inputParts[0].text : inputParts,
+      system_instruction:
+        'You are an exact Physics Problem Solver. Verify every unit conversion, state assumptions (like g=9.8 m/s^2), use standard LaTeX for formulas, and ensure arithmetic in verificationExpression matches the final numerical answer.',
+      response_format: {
+        type: Type.OBJECT,
+        properties: {
+          needsClarification: { type: Type.BOOLEAN },
+          clarificationQuestion: { type: Type.STRING },
+          understanding: { type: Type.STRING },
+          givens: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                symbol: { type: Type.STRING },
+                value: { type: Type.STRING },
+                unit: { type: Type.STRING },
+                meaning: { type: Type.STRING },
               },
-              description: 'Step 2: Extracted givens',
             },
-            target: { type: Type.STRING, description: 'Step 3: Required quantity and symbol' },
-            unitConversions: { type: Type.STRING, description: 'Step 4: SI unit conversions performed' },
-            selectedFormulaLatex: { type: Type.STRING, description: 'Step 5: Main formula in pure LaTeX without $$' },
-            formulaReason: { type: Type.STRING, description: 'Step 6: Why this law/formula applies here' },
-            substitutionLatex: { type: Type.STRING, description: 'Step 7: Substitution step in pure LaTeX' },
-            calculations: { type: Type.STRING, description: 'Step 8: Detailed arithmetic breakdown' },
-            verificationExpression: {
-              type: Type.STRING,
-              description: 'Pure mathjs arithmetic expression (e.g. "0.5 * 9.8 * 4^2") evaluating to the final scalar value, or empty string if symbolic',
-            },
-            finalNumericValue: { type: Type.NUMBER, description: 'Final numeric scalar value if applicable' },
-            finalAnswerText: { type: Type.STRING, description: 'Step 9: Final answer clearly stated (exact & rounded)' },
-            unit: { type: Type.STRING, description: 'Step 10: Final SI unit' },
-            sanityCheck: { type: Type.STRING, description: 'Step 11: Dimensional and physical reasonableness check' },
           },
-          required: [
-            'needsClarification',
-            'understanding',
-            'givens',
-            'target',
-            'unitConversions',
-            'selectedFormulaLatex',
-            'formulaReason',
-            'substitutionLatex',
-            'calculations',
-            'finalAnswerText',
-            'unit',
-            'sanityCheck',
-          ],
+          target: { type: Type.STRING },
+          unitConversions: { type: Type.STRING },
+          selectedFormulaLatex: { type: Type.STRING },
+          formulaReason: { type: Type.STRING },
+          substitutionLatex: { type: Type.STRING },
+          calculations: { type: Type.STRING },
+          verificationExpression: { type: Type.STRING },
+          finalNumericValue: { type: Type.NUMBER },
+          finalAnswerText: { type: Type.STRING },
+          unit: { type: Type.STRING },
+          sanityCheck: { type: Type.STRING },
         },
+        required: [
+          'needsClarification',
+          'understanding',
+          'givens',
+          'target',
+          'unitConversions',
+          'selectedFormulaLatex',
+          'formulaReason',
+          'substitutionLatex',
+          'calculations',
+          'finalAnswerText',
+          'unit',
+          'sanityCheck',
+        ],
+      },
+      generation_config: {
+        thinking_level: 'high',
       },
     });
 
-    const parsed = JSON.parse(response.text || '{}');
+    const fullOutput = interaction.output_text || '';
+    let parsed: any = {};
+    try {
+      const jsonMatch = fullOutput.match(/```json\s*([\s\S]*?)\s*```/) || fullOutput.match(/([\{\[][\s\S]*[\}\]])/);
+      if (jsonMatch) {
+        parsed = JSON.parse(jsonMatch[1]);
+      } else {
+        parsed = JSON.parse(fullOutput);
+      }
+    } catch (e) {
+      console.error('Solver JSON parse error:', fullOutput);
+      parsed = {
+        needsClarification: false,
+        understanding: fullOutput,
+        givens: [],
+        target: '',
+        unitConversions: '',
+        selectedFormulaLatex: '',
+        formulaReason: '',
+        substitutionLatex: '',
+        calculations: '',
+        finalAnswerText: 'Parsed output',
+        unit: '',
+        sanityCheck: '',
+      };
+    }
 
     // Deterministic Math.js verification
     let mathVerification: { verified: boolean; engineValue?: number; expression?: string; note?: string } = {
@@ -336,7 +362,7 @@ ${givensSummary}`;
   }
 });
 
-// Explain a specific step in the solver
+// Explain a specific step in the solver using Interactions API (gemini-3.8-flash)
 app.post('/api/ai/solver/explain-step', async (req, res) => {
   try {
     const { stepTitle, stepContent, problemContext, language = 'ar' } = req.body as {
@@ -352,20 +378,22 @@ app.post('/api/ai/solver/explain-step', async (req, res) => {
         : language === 'ar'
         ? 'Arabic (with English physics terms in parentheses)'
         : 'English';
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: `Explain this specific physics solution step clearly for a student who wants deeper understanding.
+
+    const interaction = await ai.interactions.create({
+      model: 'gemini-3.8-flash',
+      input: `Explain this specific physics solution step clearly for a student who wants deeper understanding.
 Language: ${stepLangPrompt}
 Step: ${stepTitle}
 Step Content: ${stepContent}
 Original Problem Context: ${problemContext}
 Use clean LaTeX ($...$ or $$...$$) and verify all units.`,
-      config: {
-        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+      generation_config: {
+        thinking_level: 'low',
       },
     });
+
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
-    res.json({ explanation: response.text || '' });
+    res.json({ explanation: interaction.output_text || '' });
   } catch (err: any) {
     console.error('Explain Step Error:', err);
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
@@ -389,9 +417,13 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Physics Smart server listening on http://localhost:${PORT}`);
-  });
+  if (!process.env.VERCEL) {
+    app.listen(PORT, '0.0.0.0', () => {
+      console.log(`Physics Smart server listening on http://localhost:${PORT}`);
+    });
+  }
 }
 
 startServer();
+
+export default app;
