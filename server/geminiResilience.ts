@@ -2,7 +2,7 @@ import { GoogleGenAI } from '@google/genai';
 
 export const PRIMARY_GEMINI_MODEL = 'gemini-3.8-flash';
 
-// Active, non-deprecated Flash fallback candidates ordered by stability and Interactions API compatibility
+// Active, non-deprecated Flash fallback candidates ordered by stability and low latency
 export const FALLBACK_FLASH_CANDIDATES = [
   'gemini-4-hydrogen',
   'gemini-3.1-flash-lite',
@@ -10,10 +10,12 @@ export const FALLBACK_FLASH_CANDIDATES = [
   'gemini-3-flash-preview',
 ] as const;
 
-export const BACKOFF_SCHEDULE_MS = [1000, 2000, 4000] as const;
-export const MAX_PRIMARY_RETRIES = 2;
-export const DEFAULT_TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS || 45000);
-export const PRIMARY_COOLDOWN_MS = 45_000; // Auto-recover to primary after high-demand window
+// Fast backoff schedule: 1 quick retry (~650ms) before immediate failover
+export const BACKOFF_SCHEDULE_MS = [650, 1400] as const;
+export const MAX_PRIMARY_RETRIES = 1;
+export const DEFAULT_TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS || 20_000);
+export const DEFAULT_FIRST_TOKEN_TIMEOUT_MS = Number(process.env.GEMINI_FIRST_TOKEN_TIMEOUT_MS || 11_000);
+export const PRIMARY_COOLDOWN_MS = 60_000; // Circuit breaker cooldown before auto-recovering to primary
 export const FALLBACK_CACHE_TTL_MS = 10 * 60_000; // Cache verified fallback availability for 10 min
 
 export type GeminiErrorCategory =
@@ -42,6 +44,7 @@ export interface GeminiExecutionMeta {
   usedFallback: boolean;
   attempts: number;
   durationMs: number;
+  ttftMs?: number;
   primaryError: { category: GeminiErrorCategory; httpStatus: number; summary: string } | null;
   fallbackError: { model: string; category: GeminiErrorCategory; httpStatus: number; summary: string } | null;
 }
@@ -68,13 +71,20 @@ export interface GeminiClientLike {
 export interface ResilienceOptions {
   endpoint: string;
   timeoutMs?: number;
+  firstTokenTimeoutMs?: number;
   maxPrimaryRetries?: number;
   backoffScheduleMs?: readonly number[];
   jitterMaxMs?: number;
+  signal?: AbortSignal;
   sleepFn?: (ms: number) => Promise<void>;
   nowFn?: () => number;
   clientFactory?: () => GeminiClientLike;
   onLog?: (entry: Record<string, unknown>) => void;
+}
+
+export interface StreamCallbacks {
+  onFirstToken?: (info: { model: string; usedFallback: boolean; ttftMs: number; attempts: number }) => void;
+  onDelta: (chunk: string) => void;
 }
 
 interface CircuitState {
@@ -232,7 +242,7 @@ export function classifyGeminiError(err: any): ClassifiedGeminiError {
     };
   }
 
-  // 5. High demand / 503 -> Retry with backoff then fallback
+  // 5. High demand / 503 -> Quick retry then immediate fallback
   if (
     status === 503 ||
     lower.includes('high demand') ||
@@ -250,7 +260,7 @@ export function classifyGeminiError(err: any): ClassifiedGeminiError {
     };
   }
 
-  // 6. Rate limit / 429 -> Retry with backoff then fallback
+  // 6. Rate limit / 429 -> Retry then fallback
   if (status === 429 || lower.includes('resource_exhausted') || lower.includes('rate limit') || lower.includes('too many requests')) {
     return {
       category: 'rate_limit',
@@ -262,7 +272,7 @@ export function classifyGeminiError(err: any): ClassifiedGeminiError {
     };
   }
 
-  // 7. Timeout -> Retry then fallback
+  // 7. Timeout -> Step down thinking_level & fast failover
   if (
     status === 408 ||
     status === 504 ||
@@ -332,9 +342,9 @@ export function isPreviousInteractionError(err: any): boolean {
 export function computeBackoffDelayMs(
   retryIndex: number,
   schedule: readonly number[] = BACKOFF_SCHEDULE_MS,
-  jitterMaxMs = 250
+  jitterMaxMs = 150
 ): number {
-  const base = schedule[Math.min(retryIndex, schedule.length - 1)] ?? 1000;
+  const base = schedule[Math.min(retryIndex, schedule.length - 1)] ?? 650;
   const jitter = jitterMaxMs > 0 ? Math.floor(Math.random() * jitterMaxMs) : 0;
   return base + jitter;
 }
@@ -364,11 +374,9 @@ export function extractInteractionOutputText(interaction: any): string {
 function isEligibleFallbackFlashName(modelName: string): boolean {
   const id = modelName.replace(/^models\//, '').toLowerCase();
   if (!id.includes('flash')) {
-    // Include gemini-4-hydrogen (Gemini 4 Flash alias in @google/genai)
     if (id !== 'gemini-4-hydrogen') return false;
   }
   if (id === PRIMARY_GEMINI_MODEL) return false;
-  // Never pick deprecated or specialized non-text-chat models
   const disallowedFragments = [
     '1.5',
     '2.0',
@@ -400,7 +408,6 @@ export async function resolveVerifiedFallbackModels(
 
   const discovered = new Set<string>();
 
-  // 1. Check account-available models via SDK if supported (single lightweight metadata check)
   if (ai.models?.list) {
     try {
       const pager: any = await ai.models.list({ config: { pageSize: 50 } });
@@ -415,16 +422,14 @@ export async function resolveVerifiedFallbackModels(
         const methods: string[] = Array.isArray(item?.supportedGenerationMethods)
           ? item.supportedGenerationMethods
           : [];
-        // Skip models explicitly lacking generation support
         if (methods.length > 0 && !methods.some((m) => /generate|interact/i.test(m))) continue;
         discovered.add(rawName);
       }
     } catch {
-      // Fallback to individual verification below
+      // Fall through to models.get or curated active list
     }
   }
 
-  // 2. If list() didn't return items, verify vetted candidates via models.get() if supported
   if (discovered.size === 0 && ai.models?.get) {
     for (const candidate of FALLBACK_FLASH_CANDIDATES) {
       if ((circuitState.unavailableModelsUntil.get(candidate) || 0) > now) continue;
@@ -432,7 +437,7 @@ export async function resolveVerifiedFallbackModels(
         const info: any = await ai.models.get({ model: candidate });
         if (info) {
           discovered.add(candidate);
-          break; // Found a verified active Flash fallback model
+          break;
         }
       } catch (err: any) {
         const classified = classifyGeminiError(err);
@@ -443,7 +448,6 @@ export async function resolveVerifiedFallbackModels(
     }
   }
 
-  // Order discovered models prioritizing our vetted FALLBACK_FLASH_CANDIDATES order
   const ordered: string[] = [];
   for (const preferred of FALLBACK_FLASH_CANDIDATES) {
     if (discovered.has(preferred) && (circuitState.unavailableModelsUntil.get(preferred) || 0) <= now) {
@@ -456,7 +460,6 @@ export async function resolveVerifiedFallbackModels(
     }
   }
 
-  // If discovery APIs themselves failed (e.g., transient metadata endpoint issue), keep vetted active list
   const finalModels =
     ordered.length > 0
       ? ordered
@@ -474,13 +477,18 @@ function buildInteractionParamsForModel(
   model: string,
   payload: InteractionRequestPayload,
   includePreviousInteractionId: boolean,
-  forceLowThinking = false
+  forceLowThinking = false,
+  stream = false
 ): Record<string, any> {
   const usePrev = Boolean(includePreviousInteractionId && payload.previous_interaction_id);
   const params: Record<string, any> = {
     model,
     input: usePrev ? payload.input : (payload.inputWithoutPreviousId ?? payload.input),
   };
+
+  if (stream) {
+    params.stream = true;
+  }
 
   if (payload.system_instruction) {
     params.system_instruction = payload.system_instruction;
@@ -494,7 +502,6 @@ function buildInteractionParamsForModel(
     params.response_format = payload.response_format;
   }
 
-  // flash-lite does not support 'high'/'low' thinking_level in some versions; omit generation_config unless supported
   if (payload.thinking_level && !model.includes('flash-lite')) {
     params.generation_config = {
       thinking_level: forceLowThinking ? 'low' : payload.thinking_level,
@@ -510,24 +517,23 @@ async function invokeInteractionOnce(
   payload: InteractionRequestPayload,
   timeoutMs: number,
   allowPreviousId: boolean,
-  forceLowThinking = false
+  forceLowThinking = false,
+  signal?: AbortSignal
 ): Promise<{ text: string; interaction: any }> {
-  const params = buildInteractionParamsForModel(model, payload, allowPreviousId, forceLowThinking);
+  const params = buildInteractionParamsForModel(model, payload, allowPreviousId, forceLowThinking, false);
+  const reqOpts: Record<string, any> = {
+    timeout_ms: timeoutMs,
+    retries: { strategy: 'none' },
+  };
+  if (signal) reqOpts.signal = signal;
 
   let interaction: any;
   try {
-    interaction = await ai.interactions.create(params, {
-      timeout_ms: timeoutMs,
-      retries: { strategy: 'none' },
-    });
+    interaction = await ai.interactions.create(params, reqOpts);
   } catch (err: any) {
-    // Safe fallback if stored previous_interaction_id expired (> 1 day) or is incompatible
     if (allowPreviousId && payload.previous_interaction_id && isPreviousInteractionError(err)) {
-      const retryParams = buildInteractionParamsForModel(model, payload, false, forceLowThinking);
-      interaction = await ai.interactions.create(retryParams, {
-        timeout_ms: timeoutMs,
-        retries: { strategy: 'none' },
-      });
+      const retryParams = buildInteractionParamsForModel(model, payload, false, forceLowThinking, false);
+      interaction = await ai.interactions.create(retryParams, reqOpts);
     } else {
       throw err;
     }
@@ -541,6 +547,162 @@ async function invokeInteractionOnce(
   }
 
   return { text, interaction };
+}
+
+async function consumeStreamAttempt(
+  ai: GeminiClientLike,
+  model: string,
+  payload: InteractionRequestPayload,
+  opts: {
+    firstTokenTimeoutMs: number;
+    overallTimeoutMs: number;
+    allowPreviousId: boolean;
+    forceLowThinking: boolean;
+    parentSignal?: AbortSignal;
+    nowFn: () => number;
+    attemptStartTime: number;
+    onDelta: (chunk: string) => void;
+    onFirstToken: (ttftMs: number) => void;
+  }
+): Promise<{ text: string; interactionId: string | null; ttftMs: number }> {
+  const attemptController = new AbortController();
+  const onParentAbort = () => attemptController.abort(opts.parentSignal?.reason);
+  if (opts.parentSignal) {
+    if (opts.parentSignal.aborted) {
+      throw Object.assign(new Error('Request aborted by client'), { name: 'AbortError' });
+    }
+    opts.parentSignal.addEventListener('abort', onParentAbort, { once: true });
+  }
+
+  let ttftTimer: ReturnType<typeof setTimeout> | null = null;
+  let overallTimer: ReturnType<typeof setTimeout> | null = null;
+  let timedOutReason: 'ttft' | 'overall' | null = null;
+
+  ttftTimer = setTimeout(() => {
+    timedOutReason = 'ttft';
+    attemptController.abort(new Error('TimeoutError: First-token deadline exceeded'));
+  }, opts.firstTokenTimeoutMs);
+
+  overallTimer = setTimeout(() => {
+    timedOutReason = 'overall';
+    attemptController.abort(new Error('TimeoutError: Overall stream deadline exceeded'));
+  }, opts.overallTimeoutMs);
+
+  let emittedAnyDelta = false;
+  let firstTokenMs = 0;
+  let interactionId: string | null = null;
+  const chunks: string[] = [];
+
+  try {
+    const createStream = async (usePrevId: boolean) => {
+      const params = buildInteractionParamsForModel(model, payload, usePrevId, opts.forceLowThinking, true);
+      return await ai.interactions.create(params, {
+        timeout_ms: opts.overallTimeoutMs,
+        signal: attemptController.signal,
+        retries: { strategy: 'none' },
+      });
+    };
+
+    let stream: AsyncIterable<any>;
+    try {
+      stream = await createStream(opts.allowPreviousId);
+    } catch (err: any) {
+      if (opts.allowPreviousId && payload.previous_interaction_id && isPreviousInteractionError(err)) {
+        stream = await createStream(false);
+      } else {
+        throw err;
+      }
+    }
+
+    // If mock or SDK somehow returned non-iterable Interaction directly, adapt cleanly
+    if (stream && typeof (stream as any)[Symbol.asyncIterator] !== 'function') {
+      const fallbackText = extractInteractionOutputText(stream);
+      if (!fallbackText) {
+        const emptyErr: any = new Error('Model returned an empty response.');
+        emptyErr.code = 'EMPTY_RESPONSE';
+        throw emptyErr;
+      }
+      if (ttftTimer) clearTimeout(ttftTimer);
+      firstTokenMs = Math.max(1, opts.nowFn() - opts.attemptStartTime);
+      opts.onFirstToken(firstTokenMs);
+      opts.onDelta(fallbackText);
+      return {
+        text: fallbackText,
+        interactionId: (stream as any)?.id || null,
+        ttftMs: firstTokenMs,
+      };
+    }
+
+    for await (const event of stream) {
+      if (attemptController.signal.aborted) {
+        break;
+      }
+
+      if (event?.event_type === 'interaction.created' || event?.event_type === 'interaction.completed') {
+        if (event?.interaction?.id) {
+          interactionId = String(event.interaction.id);
+        }
+      } else if (event?.event_type === 'error') {
+        const evErr: any = new Error(event?.error?.message || 'Interaction stream error');
+        evErr.status = event?.error?.code;
+        evErr.data$ = { error: event?.error };
+        throw evErr;
+      } else if (event?.event_type === 'step.delta' || event?.event_type === 'content.delta') {
+        const delta = event?.delta;
+        if (delta?.type === 'text' && typeof delta.text === 'string' && delta.text.length > 0) {
+          if (!emittedAnyDelta) {
+            emittedAnyDelta = true;
+            if (ttftTimer) {
+              clearTimeout(ttftTimer);
+              ttftTimer = null;
+            }
+            firstTokenMs = Math.max(1, opts.nowFn() - opts.attemptStartTime);
+            opts.onFirstToken(firstTokenMs);
+          }
+          chunks.push(delta.text);
+          opts.onDelta(delta.text);
+        }
+      }
+    }
+
+    if (timedOutReason) {
+      const toErr: any = new Error(`Request timed out: TimeoutError (${timedOutReason})`);
+      toErr.name = 'APIConnectionTimeoutError';
+      toErr.status = 504;
+      throw toErr;
+    }
+
+    const fullText = chunks.join('');
+    if (!fullText.trim()) {
+      const emptyErr: any = new Error('Model returned an empty stream.');
+      emptyErr.code = 'EMPTY_RESPONSE';
+      throw emptyErr;
+    }
+
+    return {
+      text: fullText.trim(),
+      interactionId,
+      ttftMs: firstTokenMs || Math.max(1, opts.nowFn() - opts.attemptStartTime),
+    };
+  } catch (err: any) {
+    if (timedOutReason && !emittedAnyDelta) {
+      const toErr: any = new Error(`Request timed out: TimeoutError (${timedOutReason})`);
+      toErr.name = 'APIConnectionTimeoutError';
+      toErr.status = 504;
+      throw toErr;
+    }
+    // Tag whether partial text was already sent downstream so caller knows not to replay another model on top
+    if (emittedAnyDelta) {
+      err.partialStreamEmitted = true;
+    }
+    throw err;
+  } finally {
+    if (ttftTimer) clearTimeout(ttftTimer);
+    if (overallTimer) clearTimeout(overallTimer);
+    if (opts.parentSignal) {
+      opts.parentSignal.removeEventListener('abort', onParentAbort);
+    }
+  }
 }
 
 export class GeminiResilienceError extends Error {
@@ -605,7 +767,7 @@ export async function executeGeminiInteractionWithResilience(
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxPrimaryRetries = options.maxPrimaryRetries ?? MAX_PRIMARY_RETRIES;
   const backoffSchedule = options.backoffScheduleMs ?? BACKOFF_SCHEDULE_MS;
-  const jitterMaxMs = options.jitterMaxMs ?? 250;
+  const jitterMaxMs = options.jitterMaxMs ?? 150;
   const log = options.onLog || ((entry) => console.log('[GeminiResilience]', JSON.stringify(entry)));
 
   const startTime = nowFn();
@@ -640,7 +802,7 @@ export async function executeGeminiInteractionWithResilience(
   let shouldTriggerFallback = skipPrimaryBecauseCooldown;
   let forceLowThinking = false;
 
-  // Phase 1: Primary Model (gemini-3.8-flash) with Smart Retry + Exponential Backoff
+  // Phase 1: Primary Model (gemini-3.8-flash) with 1 fast retry before failover
   if (!skipPrimaryBecauseCooldown) {
     for (let retryIdx = 0; retryIdx <= maxPrimaryRetries; retryIdx++) {
       totalAttempts += 1;
@@ -651,9 +813,9 @@ export async function executeGeminiInteractionWithResilience(
           payload,
           timeoutMs,
           Boolean(payload.previous_interaction_id),
-          forceLowThinking
+          forceLowThinking,
+          options.signal
         );
-        // Primary succeeded -> clear any prior cooldown immediately
         circuitState.primaryCooldownUntil = 0;
         const meta: GeminiExecutionMeta = {
           model: PRIMARY_GEMINI_MODEL,
@@ -687,7 +849,6 @@ export async function executeGeminiInteractionWithResilience(
           summary: classified.rawSummary,
         });
 
-        // Non-retryable & non-fallback errors (API key, bad request, permission) -> abort immediately
         if (!classified.retryableOnSameModel && !classified.triggersFallback) {
           const meta: GeminiExecutionMeta = {
             model: PRIMARY_GEMINI_MODEL,
@@ -705,18 +866,15 @@ export async function executeGeminiInteractionWithResilience(
           });
         }
 
-        // If model itself is 404 unavailable, skip further retries on primary and failover immediately
         if (!classified.retryableOnSameModel && classified.triggersFallback) {
           shouldTriggerFallback = true;
           break;
         }
 
-        // Retryable transient error (503, 429, 500, timeout, network, empty): wait with exponential backoff + jitter
         if (retryIdx < maxPrimaryRetries) {
           const waitMs = computeBackoffDelayMs(retryIdx, backoffSchedule, jitterMaxMs);
           await sleepFn(waitMs);
         } else {
-          // Exhausted retries on primary -> activate short cooldown and trigger fallback
           circuitState.primaryCooldownUntil = nowFn() + PRIMARY_COOLDOWN_MS;
           shouldTriggerFallback = true;
         }
@@ -726,7 +884,7 @@ export async function executeGeminiInteractionWithResilience(
     primaryErrorInfo = {
       category: 'high_demand',
       httpStatus: 503,
-      summary: 'Primary model in temporary cooldown window after 503 high demand.',
+      summary: 'Primary model in circuit-breaker cooldown window after recent failure.',
     };
   }
 
@@ -737,9 +895,15 @@ export async function executeGeminiInteractionWithResilience(
     for (const fallbackModel of fallbackModels) {
       totalAttempts += 1;
       try {
-        // Note: Do not reuse primary model's previous_interaction_id on a different fallback model;
-        // full conversation context is already preserved in payload.input transcript.
-        const result = await invokeInteractionOnce(ai, fallbackModel, payload, timeoutMs, false, forceLowThinking);
+        const result = await invokeInteractionOnce(
+          ai,
+          fallbackModel,
+          payload,
+          timeoutMs,
+          false,
+          true,
+          options.signal
+        );
         const meta: GeminiExecutionMeta = {
           model: fallbackModel,
           usedFallback: true,
@@ -768,7 +932,6 @@ export async function executeGeminiInteractionWithResilience(
           summary: classified.rawSummary,
         });
 
-        // If auth/bad_request happens on fallback too, stop immediately
         if (classified.category === 'auth_error' || classified.category === 'bad_request') {
           const meta: GeminiExecutionMeta = {
             model: fallbackModel,
@@ -793,7 +956,6 @@ export async function executeGeminiInteractionWithResilience(
     }
   }
 
-  // Both primary and fallback models failed
   const lastCat = fallbackErrorInfo?.category || primaryErrorInfo?.category || 'high_demand';
   const lastStatus = fallbackErrorInfo?.httpStatus || primaryErrorInfo?.httpStatus || 503;
   const meta: GeminiExecutionMeta = {
@@ -805,6 +967,291 @@ export async function executeGeminiInteractionWithResilience(
     fallbackError: fallbackErrorInfo,
   };
   log({ endpoint: options.endpoint, event: 'all_models_failed', ...meta });
+
+  const safeMsg =
+    lastCat === 'rate_limit'
+      ? 'المدرس الذكي يواجه ضغطًا مؤقتًا في الطلبات. يرجى إعادة المحاولة بعد لحظات.'
+      : lastCat === 'timeout'
+      ? 'استغرق الاتصال وقتًا أطول من المعتاد. سؤالك محفوظ، يرجى الضغط على إعادة المحاولة.'
+      : lastCat === 'network_error'
+      ? 'تعذر الاتصال بالخدمة مؤقتًا. يرجى التأكد من اتصال الإنترنت والمحاولة مرة أخرى.'
+      : 'المدرس الذكي مشغول حاليًا بطلبات كثيرة. سؤالك محفوظ، يرجى إعادة المحاولة بعد لحظات.';
+
+  throw new GeminiResilienceError(safeMsg, {
+    httpStatus: lastStatus,
+    errorCode: mapCategoryToErrorCode(lastCat),
+    retryable: true,
+    meta,
+  });
+}
+
+export async function executeGeminiInteractionStreamWithResilience(
+  payload: InteractionRequestPayload,
+  callbacks: StreamCallbacks,
+  options: ResilienceOptions
+): Promise<{ text: string; interactionId: string | null; meta: GeminiExecutionMeta }> {
+  const nowFn = options.nowFn || Date.now;
+  const sleepFn = options.sleepFn || ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const firstTokenTimeoutMs = options.firstTokenTimeoutMs ?? DEFAULT_FIRST_TOKEN_TIMEOUT_MS;
+  const overallTimeoutMs = options.timeoutMs ?? Math.max(DEFAULT_TIMEOUT_MS, 35_000);
+  const maxPrimaryRetries = options.maxPrimaryRetries ?? MAX_PRIMARY_RETRIES;
+  const backoffSchedule = options.backoffScheduleMs ?? BACKOFF_SCHEDULE_MS;
+  const jitterMaxMs = options.jitterMaxMs ?? 150;
+  const log = options.onLog || ((entry) => console.log('[GeminiResilience]', JSON.stringify(entry)));
+
+  const startTime = nowFn();
+  let totalAttempts = 0;
+  let primaryErrorInfo: GeminiExecutionMeta['primaryError'] = null;
+  let fallbackErrorInfo: GeminiExecutionMeta['fallbackError'] = null;
+
+  let ai: GeminiClientLike;
+  try {
+    ai = options.clientFactory ? options.clientFactory() : createGeminiClient();
+  } catch (err: any) {
+    const classified = classifyGeminiError(err);
+    const meta: GeminiExecutionMeta = {
+      model: PRIMARY_GEMINI_MODEL,
+      usedFallback: false,
+      attempts: 0,
+      durationMs: nowFn() - startTime,
+      primaryError: { category: classified.category, httpStatus: classified.httpStatus, summary: classified.rawSummary },
+      fallbackError: null,
+    };
+    log({ endpoint: options.endpoint, event: 'client_init_error', ...meta });
+    throw new GeminiResilienceError(classified.safeMessage, {
+      httpStatus: classified.httpStatus,
+      errorCode: mapCategoryToErrorCode(classified.category),
+      retryable: false,
+      meta,
+    });
+  }
+
+  const now = nowFn();
+  const skipPrimaryBecauseCooldown = now < circuitState.primaryCooldownUntil;
+  let shouldTriggerFallback = skipPrimaryBecauseCooldown;
+  let forceLowThinking = false;
+
+  // Phase 1: Primary Model Stream with TTFT Watchdog + Fast 1-Retry Failover
+  if (!skipPrimaryBecauseCooldown) {
+    for (let retryIdx = 0; retryIdx <= maxPrimaryRetries; retryIdx++) {
+      totalAttempts += 1;
+      try {
+        const res = await consumeStreamAttempt(ai, PRIMARY_GEMINI_MODEL, payload, {
+          firstTokenTimeoutMs,
+          overallTimeoutMs,
+          allowPreviousId: Boolean(payload.previous_interaction_id),
+          forceLowThinking,
+          parentSignal: options.signal,
+          nowFn,
+          attemptStartTime: startTime,
+          onDelta: callbacks.onDelta,
+          onFirstToken: (ttftMs) =>
+            callbacks.onFirstToken?.({
+              model: PRIMARY_GEMINI_MODEL,
+              usedFallback: false,
+              ttftMs,
+              attempts: totalAttempts,
+            }),
+        });
+
+        circuitState.primaryCooldownUntil = 0;
+        const meta: GeminiExecutionMeta = {
+          model: PRIMARY_GEMINI_MODEL,
+          usedFallback: false,
+          attempts: totalAttempts,
+          durationMs: nowFn() - startTime,
+          ttftMs: res.ttftMs,
+          primaryError: primaryErrorInfo,
+          fallbackError: null,
+        };
+        log({ endpoint: options.endpoint, event: 'stream_success', ...meta });
+        return { text: res.text, interactionId: res.interactionId, meta };
+      } catch (err: any) {
+        if (err?.partialStreamEmitted || options.signal?.aborted) {
+          const classified = classifyGeminiError(err);
+          const meta: GeminiExecutionMeta = {
+            model: PRIMARY_GEMINI_MODEL,
+            usedFallback: false,
+            attempts: totalAttempts,
+            durationMs: nowFn() - startTime,
+            primaryError: primaryErrorInfo,
+            fallbackError: null,
+          };
+          throw new GeminiResilienceError(classified.safeMessage, {
+            httpStatus: classified.httpStatus,
+            errorCode: mapCategoryToErrorCode(classified.category),
+            retryable: true,
+            meta,
+          });
+        }
+
+        const classified = classifyGeminiError(err);
+        primaryErrorInfo = {
+          category: classified.category,
+          httpStatus: classified.httpStatus,
+          summary: classified.rawSummary,
+        };
+        if (classified.category === 'timeout') {
+          forceLowThinking = true;
+        }
+
+        log({
+          endpoint: options.endpoint,
+          event: 'primary_stream_failed',
+          model: PRIMARY_GEMINI_MODEL,
+          attempt: totalAttempts,
+          category: classified.category,
+          httpStatus: classified.httpStatus,
+          retryable: classified.retryableOnSameModel,
+          summary: classified.rawSummary,
+        });
+
+        if (!classified.retryableOnSameModel && !classified.triggersFallback) {
+          const meta: GeminiExecutionMeta = {
+            model: PRIMARY_GEMINI_MODEL,
+            usedFallback: false,
+            attempts: totalAttempts,
+            durationMs: nowFn() - startTime,
+            primaryError: primaryErrorInfo,
+            fallbackError: null,
+          };
+          throw new GeminiResilienceError(classified.safeMessage, {
+            httpStatus: classified.httpStatus,
+            errorCode: mapCategoryToErrorCode(classified.category),
+            retryable: false,
+            meta,
+          });
+        }
+
+        if (!classified.retryableOnSameModel && classified.triggersFallback) {
+          shouldTriggerFallback = true;
+          break;
+        }
+
+        if (retryIdx < maxPrimaryRetries) {
+          const waitMs = computeBackoffDelayMs(retryIdx, backoffSchedule, jitterMaxMs);
+          await sleepFn(waitMs);
+        } else {
+          circuitState.primaryCooldownUntil = nowFn() + PRIMARY_COOLDOWN_MS;
+          shouldTriggerFallback = true;
+        }
+      }
+    }
+  } else {
+    primaryErrorInfo = {
+      category: 'high_demand',
+      httpStatus: 503,
+      summary: 'Primary model in circuit-breaker cooldown window after recent failure.',
+    };
+  }
+
+  // Phase 2: Fast Failover Stream on Verified Active Flash Model
+  if (shouldTriggerFallback) {
+    const fallbackModels = await resolveVerifiedFallbackModels(ai, nowFn);
+
+    for (const fallbackModel of fallbackModels) {
+      totalAttempts += 1;
+      try {
+        const res = await consumeStreamAttempt(ai, fallbackModel, payload, {
+          firstTokenTimeoutMs,
+          overallTimeoutMs,
+          allowPreviousId: false,
+          forceLowThinking: true,
+          parentSignal: options.signal,
+          nowFn,
+          attemptStartTime: startTime,
+          onDelta: callbacks.onDelta,
+          onFirstToken: (ttftMs) =>
+            callbacks.onFirstToken?.({
+              model: fallbackModel,
+              usedFallback: true,
+              ttftMs,
+              attempts: totalAttempts,
+            }),
+        });
+
+        const meta: GeminiExecutionMeta = {
+          model: fallbackModel,
+          usedFallback: true,
+          attempts: totalAttempts,
+          durationMs: nowFn() - startTime,
+          ttftMs: res.ttftMs,
+          primaryError: primaryErrorInfo,
+          fallbackError: fallbackErrorInfo,
+        };
+        log({ endpoint: options.endpoint, event: 'fallback_stream_success', ...meta });
+        return { text: res.text, interactionId: res.interactionId, meta };
+      } catch (err: any) {
+        if (err?.partialStreamEmitted || options.signal?.aborted) {
+          const classified = classifyGeminiError(err);
+          const meta: GeminiExecutionMeta = {
+            model: fallbackModel,
+            usedFallback: true,
+            attempts: totalAttempts,
+            durationMs: nowFn() - startTime,
+            primaryError: primaryErrorInfo,
+            fallbackError: fallbackErrorInfo,
+          };
+          throw new GeminiResilienceError(classified.safeMessage, {
+            httpStatus: classified.httpStatus,
+            errorCode: mapCategoryToErrorCode(classified.category),
+            retryable: true,
+            meta,
+          });
+        }
+
+        const classified = classifyGeminiError(err);
+        fallbackErrorInfo = {
+          model: fallbackModel,
+          category: classified.category,
+          httpStatus: classified.httpStatus,
+          summary: classified.rawSummary,
+        };
+        log({
+          endpoint: options.endpoint,
+          event: 'fallback_stream_failed',
+          model: fallbackModel,
+          attempt: totalAttempts,
+          category: classified.category,
+          httpStatus: classified.httpStatus,
+          summary: classified.rawSummary,
+        });
+
+        if (classified.category === 'auth_error' || classified.category === 'bad_request') {
+          const meta: GeminiExecutionMeta = {
+            model: fallbackModel,
+            usedFallback: true,
+            attempts: totalAttempts,
+            durationMs: nowFn() - startTime,
+            primaryError: primaryErrorInfo,
+            fallbackError: fallbackErrorInfo,
+          };
+          throw new GeminiResilienceError(classified.safeMessage, {
+            httpStatus: classified.httpStatus,
+            errorCode: mapCategoryToErrorCode(classified.category),
+            retryable: false,
+            meta,
+          });
+        }
+
+        if (classified.category === 'model_unavailable') {
+          circuitState.unavailableModelsUntil.set(fallbackModel, nowFn() + FALLBACK_CACHE_TTL_MS);
+        }
+      }
+    }
+  }
+
+  const lastCat = fallbackErrorInfo?.category || primaryErrorInfo?.category || 'high_demand';
+  const lastStatus = fallbackErrorInfo?.httpStatus || primaryErrorInfo?.httpStatus || 503;
+  const meta: GeminiExecutionMeta = {
+    model: fallbackErrorInfo?.model || PRIMARY_GEMINI_MODEL,
+    usedFallback: Boolean(fallbackErrorInfo),
+    attempts: totalAttempts,
+    durationMs: nowFn() - startTime,
+    primaryError: primaryErrorInfo,
+    fallbackError: fallbackErrorInfo,
+  };
+  log({ endpoint: options.endpoint, event: 'all_models_stream_failed', ...meta });
 
   const safeMsg =
     lastCat === 'rate_limit'

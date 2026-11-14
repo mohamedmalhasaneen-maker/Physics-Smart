@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Language,
   Lesson,
@@ -40,13 +40,16 @@ export function TutorView({
   onSaveSession,
   onDeleteSession,
 }: TutorViewProps) {
-  const scopedLessons = lessons.filter((l) => l.track === profile.track && l.grade === profile.grade);
+  const scopedLessons = useMemo(
+    () => lessons.filter((l) => l.track === profile.track && l.grade === profile.grade),
+    [lessons, profile.track, profile.grade]
+  );
 
   const [mode, setMode] = useState<'tutor' | 'analyzer' | 'examiner'>('tutor');
   const [tutorLang, setTutorLang] = useState<StudyLanguage>(studyLang);
   const [level, setLevel] = useState<'simple' | 'intermediate' | 'advanced'>('intermediate');
   const [style, setStyle] = useState<'conceptual' | 'mathematical' | 'visual_analogy' | 'exam_focused'>('conceptual');
-  const [detail, setDetail] = useState<'concise' | 'detailed'>('detailed');
+  const [detail, setDetail] = useState<'concise' | 'detailed'>('concise');
   const [groundedLessonId, setGroundedLessonId] = useState<string>(initialLessonContext?.id || '');
 
   useEffect(() => {
@@ -55,6 +58,7 @@ export function TutorView({
 
   const [activeSessionId, setActiveSessionId] = useState<string>(`session-${Date.now()}`);
   const [messages, setMessages] = useState<TutorMessage[]>([]);
+  const [streamingText, setStreamingText] = useState('');
   const [inputText, setInputText] = useState('');
   const [attachment, setAttachment] = useState<{ name: string; mimeType: string; data: string } | null>(null);
   const [loading, setLoading] = useState(false);
@@ -62,6 +66,11 @@ export function TutorView({
   const [errorMsg, setErrorMsg] = useState('');
   const [lastInteractionId, setLastInteractionId] = useState<string | null>(null);
   const inFlightRef = useRef(false);
+  const chatEndRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+  }, [messages.length, streamingText]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -80,13 +89,15 @@ export function TutorView({
     reader.readAsDataURL(file);
   };
 
-  const buildLessonContextString = () => {
+  const compactLessonContext = useMemo(() => {
     const lesson = scopedLessons.find((l) => l.id === groundedLessonId);
     if (!lesson) return '';
-    return `Title: ${lesson.titleEn} / ${lesson.titleAr}\nIntro (EN): ${lesson.introEn}\nIntro (AR): ${lesson.introAr}\nLaws: ${lesson.lawsLatex
-      .map((x) => `${x.nameEn} (${x.nameAr}): ${x.latex}`)
-      .join('; ')}`;
-  };
+    const laws = lesson.lawsLatex
+      .slice(0, 6)
+      .map((x) => `${x.nameAr || x.nameEn}: ${x.latex}`)
+      .join('; ');
+    return `Lesson: ${lesson.titleAr} (${lesson.titleEn})${laws ? `\nKey Laws: ${laws}` : ''}`.slice(0, 900);
+  }, [scopedLessons, groundedLessonId]);
 
   const toFriendlyTutorError = (rawErr: any, status?: number, errorCode?: string): string => {
     if (typeof navigator !== 'undefined' && !navigator.onLine) {
@@ -163,6 +174,7 @@ export function TutorView({
 
     inFlightRef.current = true;
     setMessages(nextMessages);
+    setStreamingText('');
     setInputText('');
     setAttachment(null);
     setLoading(true);
@@ -174,14 +186,18 @@ export function TutorView({
     }, 1800);
 
     const controller = new AbortController();
-    const abortTimer = window.setTimeout(() => controller.abort(), 120000);
+    const abortTimer = window.setTimeout(() => controller.abort(), 90000);
 
     try {
       const res = await fetch('/api/ai/tutor', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'text/event-stream, application/json',
+        },
         signal: controller.signal,
         body: JSON.stringify({
+          stream: true,
           message: userMsg.text,
           mode,
           language: tutorLang,
@@ -190,8 +206,11 @@ export function TutorView({
           detail,
           track: profile.track,
           grade: profile.grade,
-          lessonContext: buildLessonContextString(),
-          history: previousMessages.map((m) => ({ role: m.role, text: m.text })),
+          lessonContext: compactLessonContext,
+          history: previousMessages.slice(-6).map((m) => ({
+            role: m.role,
+            text: m.text.length > 600 ? `${m.text.slice(0, 600)}...` : m.text,
+          })),
           previousInteractionId: lastInteractionId || undefined,
           attachment: savedAttachment
             ? { mimeType: savedAttachment.mimeType, data: savedAttachment.data }
@@ -200,50 +219,125 @@ export function TutorView({
       });
 
       const contentType = res.headers.get('content-type') || '';
-      let data: any = {};
-      if (contentType.includes('application/json')) {
+
+      let finalReply = '';
+      let nextInteractionId: string | null = null;
+
+      if (contentType.includes('text/event-stream') && res.body) {
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let accumulated = '';
+        let streamErrorPayload: any = null;
+
+        const handleSseBlock = (block: string) => {
+          const lines = block.split('\n');
+          let eventType = 'message';
+          const dataLines: string[] = [];
+          for (const rawLine of lines) {
+            const line = rawLine.replace(/\r$/, '');
+            if (line.startsWith('event:')) {
+              eventType = line.slice(6).trim();
+            } else if (line.startsWith('data:')) {
+              dataLines.push(line.slice(5).trimStart());
+            }
+          }
+          if (dataLines.length === 0) return;
+          const payloadStr = dataLines.join('\n');
+          let parsed: any;
+          try {
+            parsed = JSON.parse(payloadStr);
+          } catch {
+            return;
+          }
+
+          if (eventType === 'delta' && typeof parsed.text === 'string') {
+            accumulated += parsed.text;
+            setStreamingText(accumulated);
+          } else if (eventType === 'done') {
+            finalReply = typeof parsed.reply === 'string' && parsed.reply.trim() ? parsed.reply : accumulated;
+            if (parsed.interactionId) {
+              nextInteractionId = parsed.interactionId;
+            }
+          } else if (eventType === 'error') {
+            streamErrorPayload = {
+              status: parsed.status || 503,
+              errorCode: parsed.errorCode,
+              message: parsed.error || parsed.message,
+            };
+          }
+        };
+
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let sepIdx: number;
+          while ((sepIdx = buffer.indexOf('\n\n')) !== -1) {
+            const block = buffer.slice(0, sepIdx);
+            buffer = buffer.slice(sepIdx + 2);
+            if (block.trim()) handleSseBlock(block);
+          }
+        }
+        if (buffer.trim()) {
+          handleSseBlock(buffer);
+        }
+
+        if (streamErrorPayload) {
+          throw streamErrorPayload;
+        }
+        if (!finalReply.trim()) {
+          finalReply = accumulated;
+        }
+      } else if (contentType.includes('application/json')) {
+        let data: any = {};
         try {
           data = await res.json();
         } catch {
           throw new Error('INVALID_JSON_RESPONSE');
         }
+        if (!res.ok) {
+          throw { status: res.status, errorCode: data.errorCode, message: data.error || data.message };
+        }
+        finalReply = data.reply || '';
+        nextInteractionId = data.interactionId || null;
       } else {
         const text = await res.text();
         throw { status: res.status, message: text.slice(0, 120) || 'NON_JSON_RESPONSE' };
       }
 
-      if (!res.ok) {
-        throw { status: res.status, errorCode: data.errorCode, message: data.error || data.message };
-      }
-
-      if (!data.reply || typeof data.reply !== 'string' || !data.reply.trim()) {
+      if (!finalReply || typeof finalReply !== 'string' || !finalReply.trim()) {
         throw { status: 502, errorCode: 'EMPTY_RESPONSE', message: 'Empty reply' };
       }
 
-      if (data.interactionId) {
-        setLastInteractionId(data.interactionId);
+      if (nextInteractionId) {
+        setLastInteractionId(nextInteractionId);
       }
 
       const modelMsg: TutorMessage = {
         id: `m-${Date.now() + 1}`,
         role: 'model',
-        text: data.reply,
+        text: finalReply,
         timestamp: new Date().toISOString(),
       };
       const finalMessages = [...nextMessages, modelMsg];
+      setStreamingText('');
       setMessages(finalMessages);
 
-      // Persist session in Firestore
+      // Non-blocking Firestore persistence so the student sees & can interact with the answer immediately
       const sessionTitle = finalMessages[0]?.text.slice(0, 60) || 'Physics Session';
-      await onSaveSession({
+      void onSaveSession({
         id: activeSessionId,
         userId: profile.uid,
         title: sessionTitle,
         mode,
         track: profile.track === 'unset' ? 'thanawiya' : profile.track,
         messagesJson: JSON.stringify(finalMessages),
+      }).catch((saveErr) => {
+        console.warn('Background tutor session save warning:', saveErr);
       });
     } catch (err: any) {
+      setStreamingText('');
       setMessages(previousMessages);
       setInputText(savedInputText || textToSend);
       setAttachment(savedAttachment);
@@ -262,6 +356,7 @@ export function TutorView({
       const parsed = JSON.parse(s.messagesJson) as TutorMessage[];
       setActiveSessionId(s.id);
       setMode(s.mode);
+      setStreamingText('');
       setMessages(parsed);
       setLastInteractionId(null);
       setErrorMsg('');
@@ -272,6 +367,7 @@ export function TutorView({
 
   const startNewChat = () => {
     setActiveSessionId(`session-${Date.now()}`);
+    setStreamingText('');
     setMessages([]);
     setAttachment(null);
     setLastInteractionId(null);
@@ -528,7 +624,14 @@ export function TutorView({
               </div>
             ))
           )}
-          {loading && (
+          {streamingText && (
+            <div className="flex justify-start">
+              <div dir="auto" className="max-w-[88%] rounded-2xl px-4 py-3 glass-subcard">
+                <RichPhysicsText text={streamingText} />
+              </div>
+            </div>
+          )}
+          {loading && !streamingText && (
             <div className="flex items-center gap-2 text-xs text-blue-600 dark:text-cyan-400">
               <Loader2 className="w-4 h-4 animate-spin" />
               <span>
@@ -542,6 +645,7 @@ export function TutorView({
               </span>
             </div>
           )}
+          <div ref={chatEndRef} />
         </div>
 
         {errorMsg && (

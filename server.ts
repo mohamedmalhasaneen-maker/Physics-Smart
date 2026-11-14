@@ -5,7 +5,9 @@ import dotenv from 'dotenv';
 import { Type } from '@google/genai';
 import { evaluate } from 'mathjs';
 import {
+  executeGeminiInteractionStreamWithResilience,
   executeGeminiInteractionWithResilience,
+  GeminiClientLike,
   GeminiResilienceError,
   getResilienceStateSnapshot,
   PRIMARY_GEMINI_MODEL,
@@ -28,6 +30,64 @@ app.use((_req, res, next) => {
 
 app.use(express.json({ limit: '15mb' }));
 
+// In-memory cache for static Tutor system instructions (avoids rebuilding identical prompt text every turn)
+const SYSTEM_INSTRUCTION_CACHE_MAX = 200;
+const systemInstructionCache = new Map<string, string>();
+
+function getCachedTutorSystemInstruction(opts: {
+  mode: 'tutor' | 'analyzer' | 'examiner';
+  language: 'ar' | 'en' | 'bilingual';
+  level: string;
+  style: string;
+  detail: 'concise' | 'detailed';
+  track: string;
+  grade: string;
+}): string {
+  const key = `${opts.mode}|${opts.language}|${opts.level}|${opts.style}|${opts.detail}|${opts.track}|${opts.grade}`;
+  const cached = systemInstructionCache.get(key);
+  if (cached) return cached;
+
+  const trackLabel =
+    opts.track === 'thanawiya'
+      ? 'الثانوية العامة المصرية (Thanawiya Amma)'
+      : opts.track === 'baccalaureate'
+      ? 'البكالوريا المصرية (Egyptian Baccalaureate)'
+      : 'American Diploma Physics (Honors / AP Physics)';
+
+  const modeInstructions =
+    opts.mode === 'tutor'
+      ? 'MODE: TUTOR. Explain physics clearly with Egyptian Arabic warmth and clarity (أسلوب مدرس فيزياء مصري ودود وشاطر), define symbols & SI units, show essential steps without skipping calculations.'
+      : opts.mode === 'analyzer'
+      ? 'MODE: ANALYZER. Break down rigorously: Givens (with units), Target, SI conversions, Selected Law, Substitution, Calculation, and Unit/Sanity check.'
+      : 'MODE: EXAMINER. Ask ONE conceptual or numerical question for the student track and wait for their attempt — NEVER reveal the final answer early. If grading an attempt, pinpoint exact conceptual or unit errors first, then give the next prompt.';
+
+  const languageInstruction =
+    opts.language === 'bilingual'
+      ? 'LANG: BILINGUAL (Arabic + English). Write clear Egyptian-friendly scientific Arabic explanation with key English terms in parentheses, then a crisp "**English Explanation:**" section.'
+      : opts.language === 'ar'
+      ? 'LANG: Arabic (لهجة مصرية تعليمية مبسطة ممزوجة بالمصطلحات العلمية الدقيقة وبالرموز والوحدات الإنجليزية بين قوسين). Understand Arabic, English, or mixed input.'
+      : 'LANG: Academic English. Understand Arabic, English, or mixed input.';
+
+  const detailInstruction =
+    opts.detail === 'concise'
+      ? 'DEPTH: DIRECT & CONCISE. Answer immediately with the core concept/law, SI units, and direct steps; avoid filler and offer to expand if the student asks.'
+      : 'DEPTH: DETAILED. Provide thorough step-by-step derivations, physical intuition, and complete worked calculations.';
+
+  const template = `You are Physics Smart AI Tutor (مدرس الفيزياء الذكي).
+Track: ${trackLabel} | Grade: ${opts.grade || 'General'} | Level: ${opts.level} | Style: ${opts.style}.
+${languageInstruction}
+${modeInstructions}
+${detailInstruction}
+RULES: Verify laws, constants (state assumptions like g=9.8 or 10 m/s^2), and SI units; distinguish exact vs rounded results; ask for missing values if ambiguous; maintain conversation continuity; wrap display equations in $$...$$ and inline formulas in $...$.`;
+
+  if (systemInstructionCache.size >= SYSTEM_INSTRUCTION_CACHE_MAX) {
+    const oldestKey = systemInstructionCache.keys().next().value;
+    if (oldestKey) systemInstructionCache.delete(oldestKey);
+  }
+  systemInstructionCache.set(key, template);
+  return template;
+}
+
 function buildAttachmentPart(attachment?: { mimeType: string; data: string }) {
   if (!attachment?.data || !attachment?.mimeType) return null;
   const isImage = attachment.mimeType.toLowerCase().startsWith('image/');
@@ -38,27 +98,60 @@ function buildAttachmentPart(attachment?: { mimeType: string; data: string }) {
   };
 }
 
-function sendResilienceError(res: express.Response, err: any, fallbackMessage: string) {
-  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+function formatCompactHistory(history?: Array<{ role: 'user' | 'model'; text: string }>): string {
+  if (!Array.isArray(history) || history.length === 0) return '';
+  return history
+    .slice(-6)
+    .map((h) => {
+      const cleaned = String(h.text || '').trim();
+      const clipped = cleaned.length > 500 ? `${cleaned.slice(0, 500)}...` : cleaned;
+      return `${h.role === 'user' ? 'Student' : 'Tutor'}: ${clipped}`;
+    })
+    .join('\n');
+}
+
+function buildErrorPayload(err: any, fallbackMessage: string) {
   if (err instanceof GeminiResilienceError) {
-    res.status(err.httpStatus).json({
-      error: err.message,
-      errorCode: err.errorCode,
-      retryable: err.retryable,
-      primaryError: err.primaryError ? { category: err.primaryError.category, status: err.primaryError.httpStatus } : null,
-      fallbackError: err.fallbackError
-        ? { model: err.fallbackError.model, category: err.fallbackError.category, status: err.fallbackError.httpStatus }
-        : null,
-    });
-    return;
+    return {
+      status: err.httpStatus,
+      body: {
+        error: err.message,
+        errorCode: err.errorCode,
+        retryable: err.retryable,
+        primaryError: err.primaryError
+          ? { category: err.primaryError.category, status: err.primaryError.httpStatus }
+          : null,
+        fallbackError: err.fallbackError
+          ? {
+              model: err.fallbackError.model,
+              category: err.fallbackError.category,
+              status: err.fallbackError.httpStatus,
+            }
+          : null,
+      },
+    };
   }
   const safeMsg = sanitizeSecret(err?.message || fallbackMessage);
-  res.status(500).json({
-    error: fallbackMessage,
-    errorCode: 'INTERNAL_ERROR',
-    retryable: true,
-    detail: process.env.NODE_ENV === 'production' ? undefined : safeMsg,
-  });
+  return {
+    status: 500,
+    body: {
+      error: fallbackMessage,
+      errorCode: 'INTERNAL_ERROR',
+      retryable: true,
+      detail: process.env.NODE_ENV === 'production' ? undefined : safeMsg,
+    },
+  };
+}
+
+function sendResilienceError(res: express.Response, err: any, fallbackMessage: string) {
+  const { status, body } = buildErrorPayload(err, fallbackMessage);
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.status(status).json(body);
+}
+
+function writeSseEvent(res: express.Response, event: string, data: Record<string, unknown>) {
+  if (res.writableEnded) return;
+  res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 }
 
 // Health check
@@ -101,8 +194,13 @@ app.post('/api/math/verify', (req, res) => {
   }
 });
 
-// AI Physics Tutor Endpoint using Gemini Interactions API (gemini-3.8-flash primary + auto-failover)
+// AI Physics Tutor Endpoint using Gemini Interactions API (SSE Streaming + Fast Failover)
 app.post('/api/ai/tutor', async (req, res) => {
+  const reqStart = Date.now();
+  const wantsStream =
+    req.body?.stream === true || String(req.headers.accept || '').includes('text/event-stream');
+  const clientFactory = app.locals?.geminiClientFactory as (() => GeminiClientLike) | undefined;
+
   try {
     const {
       message,
@@ -110,7 +208,7 @@ app.post('/api/ai/tutor', async (req, res) => {
       language = 'ar',
       level = 'intermediate',
       style = 'conceptual',
-      detail = 'detailed',
+      detail = 'concise',
       track = 'thanawiya',
       grade = '',
       lessonContext = '',
@@ -130,63 +228,36 @@ app.post('/api/ai/tutor', async (req, res) => {
       history?: Array<{ role: 'user' | 'model'; text: string }>;
       previousInteractionId?: string;
       attachment?: { mimeType: string; data: string };
+      stream?: boolean;
     };
 
     if (!message && !attachment) {
-      res.status(400).json({ error: 'Message or attachment is required.', errorCode: 'BAD_REQUEST', retryable: false });
+      res
+        .status(400)
+        .json({ error: 'Message or attachment is required.', errorCode: 'BAD_REQUEST', retryable: false });
       return;
     }
 
-    const trackLabel =
-      track === 'thanawiya'
-        ? 'الثانوية العامة المصرية (Egyptian Thanawiya Amma)'
-        : track === 'baccalaureate'
-        ? 'البكالوريا المصرية (Egyptian Baccalaureate)'
-        : 'American Diploma Physics (High School / Honors / AP Physics — Bilingual Arabic & English Support)';
-
-    const modeInstructions =
-      mode === 'tutor'
-        ? `You are in TUTOR MODE (وضع المدرس). Explain physics concepts from first principles using clear analogies, step-by-step derivations, complete calculations without skipping steps, symbol & SI unit definitions, and check the student's understanding with a gentle follow-up check. Use a warm, encouraging Egyptian Arabic physics teacher persona (اللهجة المصرية الواضحة المبسطة مع الدقة العلمية).`
-        : mode === 'analyzer'
-        ? `You are in ANALYZER MODE (وضع المحلل). Dissect the problem or diagram rigorously without skipping steps: list Givens with units, Target, SI unit conversions, Formula selection rationale, Algebraic substitution, Numerical evaluation, and Physical sanity check.`
-        : `You are in EXAMINER MODE (وضع الممتحن). Ask ONE challenging conceptual or numerical question appropriate to the student's track and wait for their attempt. NEVER reveal the final answer before the student attempts! If the message contains the student's attempt, grade it carefully, point out exact errors or unit mistakes, explain why, and then give the next question or follow-up.`;
-
-    const languageInstruction =
-      language === 'bilingual'
-        ? `BILINGUAL (Arabic + English): Respond clearly in BOTH Arabic and English! Provide:
-  (1) A complete, natural scientific Arabic explanation (باللهجة المصرية التعليمية المبسطة والعربية العلمية السليمة) with key English physics terms in parentheses.
-  (2) Directly below or paired cleanly, an English Explanation section ("**English Explanation:**") covering the same reasoning and terminology in crisp academic English.`
-        : language === 'ar'
-        ? 'Arabic (اشرح بأسلوب مدرس فيزياء مصري ودود وشاطر: لهجة مصرية مبسطة ومفهومة ممزوجة بالمصطلحات العلمية الدقيقة وبالرموز والوحدات القياسية الإنجليزية بين قوسين). Understand questions written in Arabic, English, or mixed Arabic-English.'
-        : 'English (clear academic English; understand questions written in Arabic, English, or mixed Arabic-English).';
-
-    const systemInstruction = `You are Physics Smart AI Tutor (مدرس الفيزياء الذكي).
-Student Track: ${trackLabel} | Grade: ${grade || 'General'}.
-Response Language: ${languageInstruction}.
-Explanation Level: ${level}. Style: ${style}. Depth: ${detail}.
-${modeInstructions}
-
-SCIENTIFIC ACCURACY & CONTINUITY RULES (MANDATORY):
-1. Verify all laws, equations, constants, and SI units explicitly.
-2. Clearly state physical assumptions (e.g., negligible air resistance, ideal wire, g = 9.8 m/s² or 10 m/s²).
-3. Distinguish exact analytical expressions from rounded decimal approximations.
-4. NEVER skip intermediate algebraic or numerical problem-solving steps.
-5. NEVER fabricate official ministry curriculum claims. If grounded context is provided below, align strictly with it.
-6. If the student's question or image is ambiguous or missing values, ask for clarification instead of guessing.
-7. Maintain full continuity with prior conversation messages, re-explain concepts patiently when asked, and keep the exact same persona consistently.
-8. Format all equations in clean LaTeX wrapped in $$...$$ for display blocks or $...$ for inline formulas.
-${lessonContext ? `\nAPPROVED PLATFORM LESSON CONTEXT:\n${lessonContext.slice(0, 6000)}` : ''}`;
+    const baseInstruction = getCachedTutorSystemInstruction({
+      mode,
+      language,
+      level,
+      style,
+      detail,
+      track,
+      grade,
+    });
+    const trimmedContext = lessonContext ? String(lessonContext).trim().slice(0, 1200) : '';
+    const systemInstruction = trimmedContext
+      ? `${baseInstruction}\nLESSON CONTEXT:\n${trimmedContext}`
+      : baseInstruction;
 
     const attachmentPart = buildAttachmentPart(attachment);
     const currentMessageText = message || (language === 'ar' ? 'حلل المرفق التالي.' : 'Analyze attachment.');
-
-    const conversationTranscript = (history || [])
-      .slice(-12)
-      .map((h) => `${h.role === 'user' ? 'Student' : 'Tutor'}: ${h.text}`)
-      .join('\n');
+    const conversationTranscript = formatCompactHistory(history);
 
     const transcriptText = conversationTranscript
-      ? `Previous Conversation Context:\n${conversationTranscript}\n\nCurrent Student Message:\n${currentMessageText}`
+      ? `Previous Conversation:\n${conversationTranscript}\n\nStudent:\n${currentMessageText}`
       : currentMessageText;
 
     const currentOnlyInput = attachmentPart
@@ -197,15 +268,94 @@ ${lessonContext ? `\nAPPROVED PLATFORM LESSON CONTEXT:\n${lessonContext.slice(0,
       ? [attachmentPart, { type: 'text', text: transcriptText }]
       : transcriptText;
 
+    const thinkingLevel = detail === 'detailed' ? 'medium' : 'low';
+    const backendPrepMs = Date.now() - reqStart;
+
+    if (wantsStream) {
+      res.status(200);
+      res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-cache, no-transform');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('X-Accel-Buffering', 'no');
+      if (typeof (res as any).flushHeaders === 'function') {
+        (res as any).flushHeaders();
+      }
+
+      const streamAbort = new AbortController();
+      res.on('close', () => {
+        if (!res.writableEnded) {
+          streamAbort.abort(new Error('Client closed SSE connection'));
+        }
+      });
+
+      try {
+        const result = await executeGeminiInteractionStreamWithResilience(
+          {
+            input: previousInteractionId ? currentOnlyInput : fullContextInput,
+            inputWithoutPreviousId: fullContextInput,
+            system_instruction: systemInstruction,
+            previous_interaction_id: previousInteractionId || undefined,
+            thinking_level: thinkingLevel,
+          },
+          {
+            onFirstToken: (info) => {
+              writeSseEvent(res, 'meta', {
+                model: info.model,
+                usedFallback: info.usedFallback,
+                attempts: info.attempts,
+                ttftMs: info.ttftMs + backendPrepMs,
+                backendPrepMs,
+              });
+            },
+            onDelta: (chunk) => {
+              writeSseEvent(res, 'delta', { text: chunk });
+            },
+          },
+          {
+            endpoint: '/api/ai/tutor',
+            signal: streamAbort.signal,
+            clientFactory,
+          }
+        );
+
+        writeSseEvent(res, 'done', {
+          reply: result.text,
+          interactionId: result.interactionId,
+          meta: {
+            model: result.meta.model,
+            usedFallback: result.meta.usedFallback,
+            attempts: result.meta.attempts,
+            ttftMs: (result.meta.ttftMs ?? 0) + backendPrepMs,
+            durationMs: result.meta.durationMs + backendPrepMs,
+            backendPrepMs,
+          },
+        });
+        res.end();
+      } catch (streamErr: any) {
+        if (!streamAbort.signal.aborted) {
+          console.error('AI Tutor Stream Error:', sanitizeSecret(streamErr?.message || 'Unknown error'));
+          const { status, body } = buildErrorPayload(
+            streamErr,
+            'تعذر الحصول على رد من المدرس الذكي حاليًا. يرجى المحاولة مرة أخرى.'
+          );
+          writeSseEvent(res, 'error', { status, ...body });
+        }
+        if (!res.writableEnded) {
+          res.end();
+        }
+      }
+      return;
+    }
+
     const result = await executeGeminiInteractionWithResilience(
       {
         input: previousInteractionId ? currentOnlyInput : fullContextInput,
         inputWithoutPreviousId: fullContextInput,
         system_instruction: systemInstruction,
         previous_interaction_id: previousInteractionId || undefined,
-        thinking_level: detail === 'detailed' ? 'medium' : 'low',
+        thinking_level: thinkingLevel,
       },
-      { endpoint: '/api/ai/tutor' }
+      { endpoint: '/api/ai/tutor', clientFactory }
     );
 
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
@@ -216,7 +366,8 @@ ${lessonContext ? `\nAPPROVED PLATFORM LESSON CONTEXT:\n${lessonContext.slice(0,
         model: result.meta.model,
         usedFallback: result.meta.usedFallback,
         attempts: result.meta.attempts,
-        durationMs: result.meta.durationMs,
+        durationMs: result.meta.durationMs + backendPrepMs,
+        backendPrepMs,
       },
     });
   } catch (err: any) {
@@ -227,6 +378,7 @@ ${lessonContext ? `\nAPPROVED PLATFORM LESSON CONTEXT:\n${lessonContext.slice(0,
 
 // Smart Physics Solver using Gemini Interactions API (gemini-3.8-flash primary + auto-failover)
 app.post('/api/ai/solver', async (req, res) => {
+  const clientFactory = app.locals?.geminiClientFactory as (() => GeminiClientLike) | undefined;
   try {
     const {
       problemText = '',
@@ -326,9 +478,9 @@ ${givensSummary}`;
             'sanityCheck',
           ],
         },
-        thinking_level: 'medium',
+        thinking_level: 'low',
       },
-      { endpoint: '/api/ai/solver', timeoutMs: 45000 }
+      { endpoint: '/api/ai/solver', timeoutMs: 32_000, clientFactory }
     );
 
     const fullOutput = result.text;
@@ -403,6 +555,7 @@ ${givensSummary}`;
 
 // Explain a specific step in the solver using Interactions API (gemini-3.8-flash primary + auto-failover)
 app.post('/api/ai/solver/explain-step', async (req, res) => {
+  const clientFactory = app.locals?.geminiClientFactory as (() => GeminiClientLike) | undefined;
   try {
     const { stepTitle, stepContent, problemContext, language = 'ar' } = req.body as {
       stepTitle: string;
@@ -428,7 +581,7 @@ Original Problem Context: ${problemContext}
 Use clean LaTeX ($...$ or $$...$$) and verify all units without skipping steps.`,
         thinking_level: 'low',
       },
-      { endpoint: '/api/ai/solver/explain-step' }
+      { endpoint: '/api/ai/solver/explain-step', clientFactory }
     );
 
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
@@ -469,6 +622,9 @@ app.use((err: any, req: express.Request, res: express.Response, next: express.Ne
 });
 
 async function startServer() {
+  if (process.env.NODE_ENV === 'test' || process.env.DISABLE_AUTO_LISTEN === 'true') {
+    return;
+  }
   if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({

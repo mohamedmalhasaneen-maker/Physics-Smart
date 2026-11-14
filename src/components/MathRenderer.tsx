@@ -1,7 +1,13 @@
 import React from 'react';
 import katex from 'katex';
 
-export function LatexInline({ latex, className = '' }: { latex: string; className?: string }) {
+export const LatexInline = React.memo(function LatexInline({
+  latex,
+  className = '',
+}: {
+  latex: string;
+  className?: string;
+}) {
   try {
     const html = katex.renderToString(latex, {
       throwOnError: false,
@@ -18,9 +24,15 @@ export function LatexInline({ latex, className = '' }: { latex: string; classNam
   } catch {
     return <code dir="ltr">{latex}</code>;
   }
-}
+});
 
-export function LatexBlock({ latex, className = '' }: { latex: string; className?: string }) {
+export const LatexBlock = React.memo(function LatexBlock({
+  latex,
+  className = '',
+}: {
+  latex: string;
+  className?: string;
+}) {
   try {
     const html = katex.renderToString(latex, {
       throwOnError: false,
@@ -41,13 +53,19 @@ export function LatexBlock({ latex, className = '' }: { latex: string; className
       </pre>
     );
   }
-}
+});
 
 /**
  * Renders prose containing mixed Arabic/English text, **bold** segments,
  * $$display$$ blocks, and $inline$ LaTeX safely.
  */
-export function RichPhysicsText({ text, className = '' }: { text: string; className?: string }) {
+export const RichPhysicsText = React.memo(function RichPhysicsText({
+  text,
+  className = '',
+}: {
+  text: string;
+  className?: string;
+}) {
   if (!text) return null;
 
   // Split by display math $$...$$ first
@@ -91,4 +109,4 @@ export function RichPhysicsText({ text, className = '' }: { text: string; classN
       })}
     </div>
   );
-}
+});
