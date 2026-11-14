@@ -1,16 +1,20 @@
 import assert from 'node:assert/strict';
+import http from 'node:http';
 import {
   BACKOFF_SCHEDULE_MS,
+  classifyGeminiError,
   computeBackoffDelayMs,
   executeGeminiInteractionStreamWithResilience,
   executeGeminiInteractionWithResilience,
   GeminiClientLike,
   GeminiResilienceError,
+  getConfiguredGeminiKey,
   MAX_PRIMARY_RETRIES,
   PRIMARY_COOLDOWN_MS,
   PRIMARY_GEMINI_MODEL,
   resetResilienceState,
   sanitizeSecret,
+  verifyGeminiAuthAndConnectivity,
 } from '../server/geminiResilience.ts';
 
 function makeSdkError(status: number, message: string, sdkStatus = 'UNAVAILABLE') {
@@ -370,7 +374,184 @@ async function runTests() {
     console.log('✓ Test 8 passed: Normal SSE streaming completes in 1 Gemini call');
   }
 
-  console.log('\nALL 9 RESILIENCE & STREAMING TESTS PASSED SUCCESSFULLY!');
+  // Test 9: 403 Permission Denied / API Restriction aborts immediately with PERMISSION_DENIED (separate from 401 AUTH_ERROR)
+  {
+    resetResilienceState();
+    let calls = 0;
+    const client: GeminiClientLike = {
+      interactions: {
+        create: async () => {
+          calls += 1;
+          throw makeSdkError(
+            403,
+            'PERMISSION_DENIED: Generative Language API has not been used in project 12345 before or it is disabled.',
+            'PERMISSION_DENIED'
+          );
+        },
+      },
+    };
+    let caught: any = null;
+    try {
+      await executeGeminiInteractionWithResilience(
+        { input: 'test' },
+        { endpoint: '/api/ai/tutor', clientFactory: () => client, sleepFn: async () => {} }
+      );
+    } catch (e) {
+      caught = e;
+    }
+    assert.ok(caught instanceof GeminiResilienceError);
+    assert.equal(caught.errorCode, 'PERMISSION_DENIED');
+    assert.equal(caught.httpStatus, 403);
+    assert.equal(caught.retryable, false);
+    assert.equal(calls, 1);
+
+    const c401 = classifyGeminiError(makeSdkError(401, 'Request had invalid authentication credentials.', 'UNAUTHENTICATED'));
+    assert.equal(c401.category, 'auth_error');
+    assert.equal(c401.httpStatus, 401);
+    console.log('✓ Test 9 passed: 403 PERMISSION_DENIED classified distinctly from 401 AUTH_ERROR with 0 retries');
+  }
+
+  // Test 10: getConfiguredGeminiKey strictly relies on GEMINI_API_KEY and ignores placeholders / secondary env names
+  {
+    const prevGemini = process.env.GEMINI_API_KEY;
+    const prevGoogle = process.env.GOOGLE_API_KEY;
+    try {
+      delete process.env.GEMINI_API_KEY;
+      process.env.GOOGLE_API_KEY = 'should-not-be-used-key';
+      assert.deepEqual(getConfiguredGeminiKey(), { apiKey: null, envVarName: null });
+
+      process.env.GEMINI_API_KEY = 'MY_GEMINI_API_KEY';
+      assert.deepEqual(getConfiguredGeminiKey(), { apiKey: null, envVarName: null });
+
+      process.env.GEMINI_API_KEY = '  AIzaSyRealLookingTestKey000111222  ';
+      assert.deepEqual(getConfiguredGeminiKey(), {
+        apiKey: 'AIzaSyRealLookingTestKey000111222',
+        envVarName: 'GEMINI_API_KEY',
+      });
+    } finally {
+      if (prevGemini === undefined) delete process.env.GEMINI_API_KEY;
+      else process.env.GEMINI_API_KEY = prevGemini;
+      if (prevGoogle === undefined) delete process.env.GOOGLE_API_KEY;
+      else process.env.GOOGLE_API_KEY = prevGoogle;
+    }
+    console.log('✓ Test 10 passed: Unified GEMINI_API_KEY resolution ignores placeholders and non-standard env vars');
+  }
+
+  // Test 11: verifyGeminiAuthAndConnectivity covers all 4 verification stages cleanly
+  {
+    const prevGemini = process.env.GEMINI_API_KEY;
+    try {
+      delete process.env.GEMINI_API_KEY;
+      const missingReport = await verifyGeminiAuthAndConnectivity();
+      assert.equal(missingReport.ok, false);
+      assert.equal(missingReport.keyPresent, false);
+      assert.equal(missingReport.httpStatus, 401);
+      assert.equal(missingReport.errorCode, 'API_KEY_MISSING');
+
+      const okReport = await verifyGeminiAuthAndConnectivity(() => ({
+        interactions: {
+          create: async () => ({ id: 'auth-probe-1', output_text: 'OK' }),
+        },
+      }));
+      assert.equal(okReport.ok, true);
+      assert.equal(okReport.keyPresent, true);
+      assert.equal(okReport.authenticated, true);
+      assert.equal(okReport.modelAvailable, true);
+      assert.equal(okReport.responseValid, true);
+      assert.equal(okReport.httpStatus, 200);
+
+      const badKeyReport = await verifyGeminiAuthAndConnectivity(() => ({
+        interactions: {
+          create: async () => {
+            throw makeSdkError(400, 'API key not valid. Please pass a valid API key.', 'INVALID_ARGUMENT');
+          },
+        },
+      }));
+      assert.equal(badKeyReport.ok, false);
+      assert.equal(badKeyReport.authenticated, false);
+      assert.equal(badKeyReport.httpStatus, 401);
+      assert.equal(badKeyReport.errorCode, 'AUTH_ERROR');
+
+      const permReport = await verifyGeminiAuthAndConnectivity(() => ({
+        interactions: {
+          create: async () => {
+            throw makeSdkError(403, 'PERMISSION_DENIED: Referrer blocked', 'PERMISSION_DENIED');
+          },
+        },
+      }));
+      assert.equal(permReport.ok, false);
+      assert.equal(permReport.authenticated, false);
+      assert.equal(permReport.httpStatus, 403);
+      assert.equal(permReport.errorCode, 'PERMISSION_DENIED');
+
+      const notFoundReport = await verifyGeminiAuthAndConnectivity(() => ({
+        interactions: {
+          create: async () => {
+            throw makeSdkError(404, 'Requested model not found', 'NOT_FOUND');
+          },
+        },
+      }));
+      assert.equal(notFoundReport.ok, false);
+      assert.equal(notFoundReport.authenticated, true);
+      assert.equal(notFoundReport.modelAvailable, false);
+      assert.equal(notFoundReport.httpStatus, 404);
+      assert.equal(notFoundReport.errorCode, 'MODEL_UNAVAILABLE');
+    } finally {
+      if (prevGemini === undefined) delete process.env.GEMINI_API_KEY;
+      else process.env.GEMINI_API_KEY = prevGemini;
+    }
+    console.log('✓ Test 11 passed: verifyGeminiAuthAndConnectivity distinguishes missing/invalid/restricted/404/200');
+  }
+
+  // Test 12: Protected /api/ai/auth-check rejects unauthenticated requests in production and works with diagnostic token
+  {
+    const prevListen = process.env.DISABLE_AUTO_LISTEN;
+    const prevNodeEnv = process.env.NODE_ENV;
+    const prevDiagToken = process.env.AI_DIAGNOSTIC_TOKEN;
+    process.env.DISABLE_AUTO_LISTEN = 'true';
+    process.env.NODE_ENV = 'production';
+    process.env.AI_DIAGNOSTIC_TOKEN = 'test-diag-secret-token';
+
+    const { default: app } = await import('../server.ts');
+    app.locals.geminiClientFactory = () => ({
+      interactions: {
+        create: async () => ({ id: 'probe-ok', output_text: 'OK' }),
+      },
+    });
+
+    const server = http.createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const addr = server.address() as any;
+    const baseUrl = `http://127.0.0.1:${addr.port}`;
+
+    try {
+      const unauthRes = await fetch(`${baseUrl}/api/ai/auth-check`);
+      assert.equal(unauthRes.status, 401);
+      const unauthBody: any = await unauthRes.json();
+      assert.equal(unauthBody.errorCode, 'AUTH_REQUIRED');
+
+      const authRes = await fetch(`${baseUrl}/api/ai/auth-check?fresh=1`, {
+        headers: { 'x-diagnostic-token': 'test-diag-secret-token' },
+      });
+      assert.equal(authRes.status, 200);
+      const authBody: any = await authRes.json();
+      assert.equal(authBody.ok, true);
+      assert.equal(authBody.responseValid, true);
+      assert.equal(authBody.model, PRIMARY_GEMINI_MODEL);
+    } finally {
+      delete app.locals.geminiClientFactory;
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      if (prevListen === undefined) delete process.env.DISABLE_AUTO_LISTEN;
+      else process.env.DISABLE_AUTO_LISTEN = prevListen;
+      if (prevNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = prevNodeEnv;
+      if (prevDiagToken === undefined) delete process.env.AI_DIAGNOSTIC_TOKEN;
+      else process.env.AI_DIAGNOSTIC_TOKEN = prevDiagToken;
+    }
+    console.log('✓ Test 12 passed: /api/ai/auth-check requires auth in production and executes safely when authorized');
+  }
+
+  console.log('\nALL 13 RESILIENCE, AUTH & STREAMING TESTS PASSED SUCCESSFULLY!');
 }
 
 runTests().catch((err) => {

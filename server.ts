@@ -1,4 +1,5 @@
 import express from 'express';
+import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
@@ -7,12 +8,14 @@ import { evaluate } from 'mathjs';
 import {
   executeGeminiInteractionStreamWithResilience,
   executeGeminiInteractionWithResilience,
+  GeminiAuthCheckReport,
   GeminiClientLike,
   GeminiResilienceError,
   getConfiguredGeminiKey,
   getResilienceStateSnapshot,
   PRIMARY_GEMINI_MODEL,
   sanitizeSecret,
+  verifyGeminiAuthAndConnectivity,
 } from './server/geminiResilience.ts';
 
 dotenv.config();
@@ -111,10 +114,18 @@ function formatCompactHistory(history?: Array<{ role: 'user' | 'model'; text: st
     .join('\n');
 }
 
-function inferErrorSource(err: GeminiResilienceError): 'vercel_env' | 'gemini_api' | 'backend' {
+function inferErrorSource(
+  err: GeminiResilienceError
+): 'vercel_env' | 'gemini_auth' | 'gemini_permissions' | 'gemini_api' | 'backend' {
   const summary = String(err.primaryError?.summary || '');
-  if (err.errorCode === 'AUTH_ERROR' && summary.includes('API_KEY_MISSING')) {
+  if (err.errorCode === 'AUTH_ERROR' && (summary.includes('API_KEY_MISSING') || summary.includes('not configured'))) {
     return 'vercel_env';
+  }
+  if (err.errorCode === 'AUTH_ERROR') {
+    return 'gemini_auth';
+  }
+  if (err.errorCode === 'PERMISSION_DENIED') {
+    return 'gemini_permissions';
   }
   if (err.errorCode === 'BAD_REQUEST' || err.errorCode === 'INTERNAL_ERROR') {
     return 'backend';
@@ -197,6 +208,124 @@ app.get('/api/health', (_req, res) => {
       thinkingDefault: 'low',
     },
     resilience: getResilienceStateSnapshot(),
+  });
+});
+
+// Protected Live Gemini Auth & Connectivity Diagnostic Probe
+const AUTH_CHECK_COOLDOWN_MS = 60_000;
+const AUTH_CHECK_IP_WINDOW_MS = 5 * 60_000;
+const AUTH_CHECK_IP_MAX = 10;
+let lastAuthCheckCache: { expiresAt: number; report: GeminiAuthCheckReport } | null = null;
+const authCheckIpHits = new Map<string, number[]>();
+
+function getFirebaseWebApiKey(): string | null {
+  try {
+    const candidates = [
+      path.resolve(__dirname, 'firebase-applet-config.json'),
+      path.resolve(process.cwd(), 'firebase-applet-config.json'),
+    ];
+    for (const filePath of candidates) {
+      if (fs.existsSync(filePath)) {
+        const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+        if (typeof parsed?.apiKey === 'string' && parsed.apiKey.trim()) {
+          return parsed.apiKey.trim();
+        }
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+async function isAuthorizedForDiagnosticProbe(req: express.Request): Promise<boolean> {
+  if (process.env.NODE_ENV !== 'production' && process.env.VERCEL_ENV !== 'production') {
+    return true;
+  }
+
+  const configuredToken = process.env.AI_DIAGNOSTIC_TOKEN?.trim();
+  const headerToken = String(req.headers['x-diagnostic-token'] || '').trim();
+  if (configuredToken && headerToken && headerToken === configuredToken) {
+    return true;
+  }
+
+  const authHeader = String(req.headers.authorization || '');
+  if (authHeader.startsWith('Bearer ')) {
+    const idToken = authHeader.slice(7).trim();
+    const firebaseApiKey = getFirebaseWebApiKey();
+    if (idToken && firebaseApiKey) {
+      try {
+        const resp = await fetch(
+          `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${encodeURIComponent(firebaseApiKey)}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ idToken }),
+          }
+        );
+        if (resp.ok) {
+          const data: any = await resp.json();
+          if (Array.isArray(data?.users) && data.users.length > 0) {
+            return true;
+          }
+        }
+      } catch {
+        return false;
+      }
+    }
+  }
+
+  return false;
+}
+
+app.get('/api/ai/auth-check', async (req, res) => {
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+
+  const authorized = await isAuthorizedForDiagnosticProbe(req);
+  if (!authorized) {
+    res.status(401).json({
+      ok: false,
+      errorCode: 'AUTH_REQUIRED',
+      error: 'Authentication (Firebase ID token or diagnostic token) is required to run live Gemini connectivity check.',
+    });
+    return;
+  }
+
+  const now = Date.now();
+  const clientIp = String(req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown')
+    .split(',')[0]
+    .trim();
+  const recentHits = (authCheckIpHits.get(clientIp) || []).filter((ts) => now - ts < AUTH_CHECK_IP_WINDOW_MS);
+  if (recentHits.length >= AUTH_CHECK_IP_MAX) {
+    res.status(429).json({
+      ok: false,
+      errorCode: 'DIAGNOSTIC_RATE_LIMIT',
+      error: 'Too many diagnostic requests. Please wait a few minutes before retrying.',
+    });
+    return;
+  }
+  recentHits.push(now);
+  authCheckIpHits.set(clientIp, recentHits);
+
+  if (lastAuthCheckCache && now < lastAuthCheckCache.expiresAt && req.query.fresh !== '1') {
+    res.status(lastAuthCheckCache.report.ok ? 200 : lastAuthCheckCache.report.httpStatus).json({
+      ...lastAuthCheckCache.report,
+      cached: true,
+    });
+    return;
+  }
+
+  const clientFactory = app.locals?.geminiClientFactory as (() => GeminiClientLike) | undefined;
+  const report = await verifyGeminiAuthAndConnectivity(clientFactory);
+  lastAuthCheckCache = {
+    expiresAt: now + AUTH_CHECK_COOLDOWN_MS,
+    report,
+  };
+
+  res.status(report.ok ? 200 : report.httpStatus).json({
+    ...report,
+    cached: false,
   });
 });
 

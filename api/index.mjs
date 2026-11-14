@@ -1,5 +1,6 @@
 // server.ts
 import express from "express";
+import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import dotenv from "dotenv";
@@ -39,11 +40,11 @@ function sanitizeSecret(text) {
   return text.replace(/AIza[0-9A-Za-z_-]{20,}/g, "[REDACTED_KEY]").replace(/(key|apiKey|api_key|token|authorization)\s*[:=]\s*['"]?[A-Za-z0-9._-]{12,}['"]?/gi, "$1=[REDACTED]");
 }
 function getConfiguredGeminiKey() {
-  const candidates = ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY"];
-  for (const name of candidates) {
-    const val = process.env[name];
-    if (typeof val === "string" && val.trim().length > 0) {
-      return { apiKey: val.trim(), envVarName: name };
+  const val = process.env.GEMINI_API_KEY;
+  if (typeof val === "string") {
+    const trimmed = val.trim();
+    if (trimmed.length > 0 && trimmed !== "MY_GEMINI_API_KEY") {
+      return { apiKey: trimmed, envVarName: "GEMINI_API_KEY" };
     }
   }
   return { apiKey: null, envVarName: null };
@@ -107,13 +108,23 @@ function classifyGeminiError(err) {
   const status = extractHttpStatus(err);
   const rawSummary = extractRawErrorMessage(err);
   const lower = rawSummary.toLowerCase();
-  if (status === 401 || status === 403 || lower.includes("api_key_invalid") || lower.includes("api key not valid") || lower.includes("permission_denied") || lower.includes("unauthenticated") || lower.includes("api_key_missing") || lower.includes("not configured in environment")) {
+  if (status === 401 || lower.includes("api_key_invalid") || lower.includes("api key not valid") || lower.includes("unauthenticated") || lower.includes("api_key_missing") || lower.includes("not configured in environment")) {
     return {
       category: "auth_error",
-      httpStatus: status || 401,
+      httpStatus: 401,
       retryableOnSameModel: false,
       triggersFallback: false,
-      safeMessage: "\u062E\u062F\u0645\u0629 \u0627\u0644\u0630\u0643\u0627\u0621 \u0627\u0644\u0627\u0635\u0637\u0646\u0627\u0639\u064A \u063A\u064A\u0631 \u0645\u0641\u0639\u0644\u0629 \u062D\u0627\u0644\u064A\u064B\u0627 \u0628\u0633\u0628\u0628 \u0625\u0639\u062F\u0627\u062F\u0627\u062A \u0627\u0644\u062E\u0627\u062F\u0645.",
+      safeMessage: lower.includes("api_key_missing") || lower.includes("not configured in environment") ? "\u0645\u0641\u062A\u0627\u062D GEMINI_API_KEY \u063A\u064A\u0631 \u0645\u0636\u0627\u0641 \u0641\u064A \u0628\u064A\u0626\u0629 \u0627\u0644\u062A\u0634\u063A\u064A\u0644 \u0639\u0644\u0649 \u0627\u0644\u062E\u0627\u062F\u0645." : "\u0645\u0641\u062A\u0627\u062D Gemini API \u063A\u064A\u0631 \u0635\u0627\u0644\u062D \u0623\u0648 \u0645\u0631\u0641\u0648\u0636 \u0645\u0646 Google (401). \u064A\u0631\u062C\u0649 \u0625\u0646\u0634\u0627\u0621 \u0645\u0641\u062A\u0627\u062D \u0635\u062D\u064A\u062D \u0645\u0646 Google AI Studio \u0648\u062A\u062D\u062F\u064A\u062B\u0647 \u0641\u064A Vercel.",
+      rawSummary
+    };
+  }
+  if (status === 403 || lower.includes("permission_denied") || lower.includes("forbidden")) {
+    return {
+      category: "permission_denied",
+      httpStatus: 403,
+      retryableOnSameModel: false,
+      triggersFallback: false,
+      safeMessage: "\u0645\u0641\u062A\u0627\u062D Gemini \u0645\u0648\u062C\u0648\u062F \u0644\u0643\u0646\u0647 \u0644\u0627 \u064A\u0645\u0644\u0643 \u0627\u0644\u0635\u0644\u0627\u062D\u064A\u0627\u062A \u0627\u0644\u0645\u0637\u0644\u0648\u0628\u0629 \u0623\u0648 \u0639\u0644\u064A\u0647 \u0642\u064A\u0648\u062F \u062A\u0645\u0646\u0639 \u0627\u0644\u0627\u0633\u062A\u062E\u062F\u0627\u0645 (403). \u062A\u062D\u0642\u0642 \u0645\u0646 \u062A\u0641\u0639\u064A\u0644 Gemini API \u0648\u0627\u0644\u0642\u064A\u0648\u062F \u0641\u064A Google AI Studio / Cloud Console.",
       rawSummary
     };
   }
@@ -514,6 +525,8 @@ function mapCategoryToErrorCode(cat) {
       return "TIMEOUT";
     case "auth_error":
       return "AUTH_ERROR";
+    case "permission_denied":
+      return "PERMISSION_DENIED";
     case "bad_request":
       return "BAD_REQUEST";
     case "model_unavailable":
@@ -686,7 +699,7 @@ async function executeGeminiInteractionWithResilience(payload, options) {
           httpStatus: classified.httpStatus,
           summary: classified.rawSummary
         });
-        if (classified.category === "auth_error" || classified.category === "bad_request") {
+        if (classified.category === "auth_error" || classified.category === "permission_denied" || classified.category === "bad_request") {
           const meta2 = {
             model: fallbackModel,
             usedFallback: true,
@@ -936,7 +949,7 @@ async function executeGeminiInteractionStreamWithResilience(payload, callbacks, 
           httpStatus: classified.httpStatus,
           summary: classified.rawSummary
         });
-        if (classified.category === "auth_error" || classified.category === "bad_request") {
+        if (classified.category === "auth_error" || classified.category === "permission_denied" || classified.category === "bad_request") {
           const meta2 = {
             model: fallbackModel,
             usedFallback: true,
@@ -976,6 +989,88 @@ async function executeGeminiInteractionStreamWithResilience(payload, callbacks, 
     retryable: true,
     meta
   });
+}
+async function verifyGeminiAuthAndConnectivity(clientFactory) {
+  const start = Date.now();
+  const { apiKey } = getConfiguredGeminiKey();
+  if (!apiKey && !clientFactory) {
+    return {
+      ok: false,
+      keyPresent: false,
+      authenticated: false,
+      modelAvailable: false,
+      responseValid: false,
+      httpStatus: 401,
+      errorCode: "API_KEY_MISSING",
+      model: PRIMARY_GEMINI_MODEL,
+      durationMs: Date.now() - start,
+      guidance: "\u0627\u0644\u0645\u062A\u063A\u064A\u0631 GEMINI_API_KEY \u063A\u064A\u0631 \u0645\u0636\u0627\u0641 \u0623\u0648 \u0641\u0627\u0631\u063A \u0641\u064A \u0628\u064A\u0626\u0629 \u0627\u0644\u0625\u0646\u062A\u0627\u062C \u0639\u0644\u0649 Vercel. \u0623\u0636\u0641\u0647 \u0641\u064A Environment Variables \u0644\u0628\u064A\u0626\u0629 Production \u062B\u0645 \u0646\u0641\u0651\u0630 Redeploy.",
+      diagnosticSummary: "GEMINI_API_KEY is not configured in server environment."
+    };
+  }
+  let ai;
+  try {
+    ai = clientFactory ? clientFactory() : createGeminiClient();
+  } catch (err) {
+    const classified = classifyGeminiError(err);
+    return {
+      ok: false,
+      keyPresent: Boolean(apiKey),
+      authenticated: false,
+      modelAvailable: false,
+      responseValid: false,
+      httpStatus: classified.httpStatus,
+      errorCode: mapCategoryToErrorCode(classified.category),
+      model: PRIMARY_GEMINI_MODEL,
+      durationMs: Date.now() - start,
+      guidance: classified.safeMessage,
+      diagnosticSummary: classified.rawSummary
+    };
+  }
+  try {
+    const interaction = await ai.interactions.create(
+      {
+        model: PRIMARY_GEMINI_MODEL,
+        input: "Reply strictly with: OK",
+        generation_config: { thinking_level: "low" }
+      },
+      { timeout_ms: 12e3, retries: { strategy: "none" } }
+    );
+    const text = extractInteractionOutputText(interaction);
+    const valid = Boolean(text && text.trim().length > 0);
+    return {
+      ok: valid,
+      keyPresent: true,
+      authenticated: true,
+      modelAvailable: true,
+      responseValid: valid,
+      httpStatus: valid ? 200 : 502,
+      errorCode: valid ? null : "EMPTY_RESPONSE",
+      model: PRIMARY_GEMINI_MODEL,
+      durationMs: Date.now() - start,
+      guidance: valid ? "\u062A\u0645 \u0627\u0644\u062A\u062D\u0642\u0642 \u0645\u0646 \u0627\u0644\u0645\u0641\u062A\u0627\u062D \u0648\u0627\u0644\u0645\u0635\u0627\u062F\u0642\u0629 \u0648\u0627\u0633\u062A\u062F\u0639\u0627\u0621 Gemini \u0628\u0646\u062C\u0627\u062D." : "\u062A\u0645\u062A \u0627\u0644\u0645\u0635\u0627\u062F\u0642\u0629 \u0648\u0644\u0643\u0646 \u0639\u0627\u062F \u0627\u0644\u0646\u0645\u0648\u0630\u062C \u0628\u0631\u062F \u0641\u0627\u0631\u063A.",
+      diagnosticSummary: null
+    };
+  } catch (err) {
+    const classified = classifyGeminiError(err);
+    const isAuthFailure = classified.category === "auth_error";
+    const isPermDenied = classified.category === "permission_denied";
+    const isModel404 = classified.category === "model_unavailable";
+    const guidance = isAuthFailure ? "\u0627\u0644\u0645\u0641\u062A\u0627\u062D \u0645\u0631\u0641\u0648\u0636 \u0623\u0648 \u063A\u064A\u0631 \u0635\u0627\u0644\u062D (401). \u0623\u0646\u0634\u0626 \u0645\u0641\u062A\u0627\u062D GEMINI_API_KEY \u062C\u062F\u064A\u062F\u064B\u0627 \u0645\u0646 Google AI Studio \u0648\u0627\u0631\u0628\u0637\u0647 \u0628\u0627\u0644\u0645\u0634\u0631\u0648\u0639 \u0627\u0644\u0635\u062D\u064A\u062D \u062B\u0645 \u062D\u062F\u0651\u062B\u0647 \u0641\u064A Vercel." : isPermDenied ? "\u0627\u0644\u0645\u0641\u062A\u0627\u062D \u0645\u0648\u062C\u0648\u062F \u0644\u0643\u0646\u0647 \u0645\u0642\u064A\u0651\u062F \u0623\u0648 \u064A\u0641\u062A\u0642\u0631 \u0644\u0644\u0635\u0644\u0627\u062D\u064A\u0627\u062A (403). \u062A\u0623\u0643\u062F \u0641\u064A Google AI Studio / Cloud Console \u0645\u0646 \u062A\u0641\u0639\u064A\u0644 Generative Language API \u0648\u0639\u062F\u0645 \u0648\u062C\u0648\u062F \u0642\u064A\u0648\u062F HTTP Referrer \u062A\u0645\u0646\u0639 \u062E\u0648\u0627\u062F\u0645 Vercel." : isModel404 ? `\u0627\u0644\u0646\u0645\u0648\u0630\u062C (${PRIMARY_GEMINI_MODEL}) \u063A\u064A\u0631 \u0645\u062A\u0627\u062D \u0644\u0647\u0630\u0627 \u0627\u0644\u0645\u0634\u0631\u0648\u0639 \u0623\u0648 \u0645\u0633\u0627\u0631 API \u063A\u064A\u0631 \u0645\u062F\u0639\u0648\u0645 (404).` : classified.category === "rate_limit" ? "\u062A\u0645 \u062A\u062C\u0627\u0648\u0632 \u062D\u062F \u0627\u0644\u0627\u0633\u062A\u062E\u062F\u0627\u0645 \u0627\u0644\u0645\u0633\u0645\u0648\u062D \u0644\u0644\u0645\u0641\u062A\u0627\u062D \u062D\u0627\u0644\u064A\u064B\u0627 (429)." : classified.category === "high_demand" ? "\u0636\u063A\u0637 \u0645\u0624\u0642\u062A \u0639\u0644\u0649 \u062E\u0648\u0627\u062F\u0645 Google Gemini (503) \u2014 \u0627\u0644\u0645\u0635\u0627\u062F\u0642\u0629 \u0646\u0641\u0633\u0647\u0627 \u0635\u0627\u0644\u062D\u0629." : classified.safeMessage;
+    return {
+      ok: false,
+      keyPresent: true,
+      authenticated: !isAuthFailure && !isPermDenied,
+      modelAvailable: !isModel404 && !isAuthFailure && !isPermDenied,
+      responseValid: false,
+      httpStatus: classified.httpStatus,
+      errorCode: mapCategoryToErrorCode(classified.category),
+      model: PRIMARY_GEMINI_MODEL,
+      durationMs: Date.now() - start,
+      guidance,
+      diagnosticSummary: sanitizeSecret(classified.rawSummary).slice(0, 260)
+    };
+  }
 }
 
 // server.ts
@@ -1031,8 +1126,14 @@ function formatCompactHistory(history) {
 }
 function inferErrorSource(err) {
   const summary = String(err.primaryError?.summary || "");
-  if (err.errorCode === "AUTH_ERROR" && summary.includes("API_KEY_MISSING")) {
+  if (err.errorCode === "AUTH_ERROR" && (summary.includes("API_KEY_MISSING") || summary.includes("not configured"))) {
     return "vercel_env";
+  }
+  if (err.errorCode === "AUTH_ERROR") {
+    return "gemini_auth";
+  }
+  if (err.errorCode === "PERMISSION_DENIED") {
+    return "gemini_permissions";
   }
   if (err.errorCode === "BAD_REQUEST" || err.errorCode === "INTERNAL_ERROR") {
     return "backend";
@@ -1109,6 +1210,108 @@ app.get("/api/health", (_req, res) => {
       thinkingDefault: "low"
     },
     resilience: getResilienceStateSnapshot()
+  });
+});
+var AUTH_CHECK_COOLDOWN_MS = 6e4;
+var AUTH_CHECK_IP_WINDOW_MS = 5 * 6e4;
+var AUTH_CHECK_IP_MAX = 10;
+var lastAuthCheckCache = null;
+var authCheckIpHits = /* @__PURE__ */ new Map();
+function getFirebaseWebApiKey() {
+  try {
+    const candidates = [
+      path.resolve(__dirname, "firebase-applet-config.json"),
+      path.resolve(process.cwd(), "firebase-applet-config.json")
+    ];
+    for (const filePath of candidates) {
+      if (fs.existsSync(filePath)) {
+        const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
+        if (typeof parsed?.apiKey === "string" && parsed.apiKey.trim()) {
+          return parsed.apiKey.trim();
+        }
+      }
+    }
+  } catch {
+  }
+  return null;
+}
+async function isAuthorizedForDiagnosticProbe(req) {
+  if (process.env.NODE_ENV !== "production" && process.env.VERCEL_ENV !== "production") {
+    return true;
+  }
+  const configuredToken = process.env.AI_DIAGNOSTIC_TOKEN?.trim();
+  const headerToken = String(req.headers["x-diagnostic-token"] || "").trim();
+  if (configuredToken && headerToken && headerToken === configuredToken) {
+    return true;
+  }
+  const authHeader = String(req.headers.authorization || "");
+  if (authHeader.startsWith("Bearer ")) {
+    const idToken = authHeader.slice(7).trim();
+    const firebaseApiKey = getFirebaseWebApiKey();
+    if (idToken && firebaseApiKey) {
+      try {
+        const resp = await fetch(
+          `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${encodeURIComponent(firebaseApiKey)}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ idToken })
+          }
+        );
+        if (resp.ok) {
+          const data = await resp.json();
+          if (Array.isArray(data?.users) && data.users.length > 0) {
+            return true;
+          }
+        }
+      } catch {
+        return false;
+      }
+    }
+  }
+  return false;
+}
+app.get("/api/ai/auth-check", async (req, res) => {
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+  const authorized = await isAuthorizedForDiagnosticProbe(req);
+  if (!authorized) {
+    res.status(401).json({
+      ok: false,
+      errorCode: "AUTH_REQUIRED",
+      error: "Authentication (Firebase ID token or diagnostic token) is required to run live Gemini connectivity check."
+    });
+    return;
+  }
+  const now = Date.now();
+  const clientIp = String(req.headers["x-forwarded-for"] || req.socket?.remoteAddress || "unknown").split(",")[0].trim();
+  const recentHits = (authCheckIpHits.get(clientIp) || []).filter((ts) => now - ts < AUTH_CHECK_IP_WINDOW_MS);
+  if (recentHits.length >= AUTH_CHECK_IP_MAX) {
+    res.status(429).json({
+      ok: false,
+      errorCode: "DIAGNOSTIC_RATE_LIMIT",
+      error: "Too many diagnostic requests. Please wait a few minutes before retrying."
+    });
+    return;
+  }
+  recentHits.push(now);
+  authCheckIpHits.set(clientIp, recentHits);
+  if (lastAuthCheckCache && now < lastAuthCheckCache.expiresAt && req.query.fresh !== "1") {
+    res.status(lastAuthCheckCache.report.ok ? 200 : lastAuthCheckCache.report.httpStatus).json({
+      ...lastAuthCheckCache.report,
+      cached: true
+    });
+    return;
+  }
+  const clientFactory = app.locals?.geminiClientFactory;
+  const report = await verifyGeminiAuthAndConnectivity(clientFactory);
+  lastAuthCheckCache = {
+    expiresAt: now + AUTH_CHECK_COOLDOWN_MS,
+    report
+  };
+  res.status(report.ok ? 200 : report.httpStatus).json({
+    ...report,
+    cached: false
   });
 });
 app.post("/api/math/verify", (req, res) => {

@@ -26,6 +26,7 @@ export type GeminiErrorCategory =
   | 'network_error'
   | 'model_unavailable'
   | 'auth_error'
+  | 'permission_denied'
   | 'bad_request'
   | 'empty_response'
   | 'unknown_error';
@@ -124,11 +125,11 @@ export function sanitizeSecret(text: string): string {
 }
 
 export function getConfiguredGeminiKey(): { apiKey: string | null; envVarName: string | null } {
-  const candidates = ['GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_GENERATIVE_AI_API_KEY'] as const;
-  for (const name of candidates) {
-    const val = process.env[name];
-    if (typeof val === 'string' && val.trim().length > 0) {
-      return { apiKey: val.trim(), envVarName: name };
+  const val = process.env.GEMINI_API_KEY;
+  if (typeof val === 'string') {
+    const trimmed = val.trim();
+    if (trimmed.length > 0 && trimmed !== 'MY_GEMINI_API_KEY') {
+      return { apiKey: trimmed, envVarName: 'GEMINI_API_KEY' };
     }
   }
   return { apiKey: null, envVarName: null };
@@ -197,23 +198,36 @@ export function classifyGeminiError(err: any): ClassifiedGeminiError {
   const rawSummary = extractRawErrorMessage(err);
   const lower = rawSummary.toLowerCase();
 
-  // 1. Auth / API key / Permission errors -> NEVER retry
+  // 1a. Missing / Invalid / Unauthenticated API Key (401) -> NEVER retry
   if (
     status === 401 ||
-    status === 403 ||
     lower.includes('api_key_invalid') ||
     lower.includes('api key not valid') ||
-    lower.includes('permission_denied') ||
     lower.includes('unauthenticated') ||
     lower.includes('api_key_missing') ||
     lower.includes('not configured in environment')
   ) {
     return {
       category: 'auth_error',
-      httpStatus: status || 401,
+      httpStatus: 401,
       retryableOnSameModel: false,
       triggersFallback: false,
-      safeMessage: 'خدمة الذكاء الاصطناعي غير مفعلة حاليًا بسبب إعدادات الخادم.',
+      safeMessage: lower.includes('api_key_missing') || lower.includes('not configured in environment')
+        ? 'مفتاح GEMINI_API_KEY غير مضاف في بيئة التشغيل على الخادم.'
+        : 'مفتاح Gemini API غير صالح أو مرفوض من Google (401). يرجى إنشاء مفتاح صحيح من Google AI Studio وتحديثه في Vercel.',
+      rawSummary,
+    };
+  }
+
+  // 1b. Permission / API Restriction / Quota-Project Denied (403) -> NEVER retry
+  if (status === 403 || lower.includes('permission_denied') || lower.includes('forbidden')) {
+    return {
+      category: 'permission_denied',
+      httpStatus: 403,
+      retryableOnSameModel: false,
+      triggersFallback: false,
+      safeMessage:
+        'مفتاح Gemini موجود لكنه لا يملك الصلاحيات المطلوبة أو عليه قيود تمنع الاستخدام (403). تحقق من تفعيل Gemini API والقيود في Google AI Studio / Cloud Console.',
       rawSummary,
     };
   }
@@ -760,6 +774,8 @@ function mapCategoryToErrorCode(cat: GeminiErrorCategory): string {
       return 'TIMEOUT';
     case 'auth_error':
       return 'AUTH_ERROR';
+    case 'permission_denied':
+      return 'PERMISSION_DENIED';
     case 'bad_request':
       return 'BAD_REQUEST';
     case 'model_unavailable':
@@ -949,7 +965,11 @@ export async function executeGeminiInteractionWithResilience(
           summary: classified.rawSummary,
         });
 
-        if (classified.category === 'auth_error' || classified.category === 'bad_request') {
+        if (
+          classified.category === 'auth_error' ||
+          classified.category === 'permission_denied' ||
+          classified.category === 'bad_request'
+        ) {
           const meta: GeminiExecutionMeta = {
             model: fallbackModel,
             usedFallback: true,
@@ -1234,7 +1254,11 @@ export async function executeGeminiInteractionStreamWithResilience(
           summary: classified.rawSummary,
         });
 
-        if (classified.category === 'auth_error' || classified.category === 'bad_request') {
+        if (
+          classified.category === 'auth_error' ||
+          classified.category === 'permission_denied' ||
+          classified.category === 'bad_request'
+        ) {
           const meta: GeminiExecutionMeta = {
             model: fallbackModel,
             usedFallback: true,
@@ -1285,4 +1309,119 @@ export async function executeGeminiInteractionStreamWithResilience(
     retryable: true,
     meta,
   });
+}
+
+export interface GeminiAuthCheckReport {
+  ok: boolean;
+  keyPresent: boolean;
+  authenticated: boolean;
+  modelAvailable: boolean;
+  responseValid: boolean;
+  httpStatus: number;
+  errorCode: string | null;
+  model: string;
+  durationMs: number;
+  guidance: string;
+  diagnosticSummary: string | null;
+}
+
+export async function verifyGeminiAuthAndConnectivity(
+  clientFactory?: () => GeminiClientLike
+): Promise<GeminiAuthCheckReport> {
+  const start = Date.now();
+  const { apiKey } = getConfiguredGeminiKey();
+  if (!apiKey && !clientFactory) {
+    return {
+      ok: false,
+      keyPresent: false,
+      authenticated: false,
+      modelAvailable: false,
+      responseValid: false,
+      httpStatus: 401,
+      errorCode: 'API_KEY_MISSING',
+      model: PRIMARY_GEMINI_MODEL,
+      durationMs: Date.now() - start,
+      guidance:
+        'المتغير GEMINI_API_KEY غير مضاف أو فارغ في بيئة الإنتاج على Vercel. أضفه في Environment Variables لبيئة Production ثم نفّذ Redeploy.',
+      diagnosticSummary: 'GEMINI_API_KEY is not configured in server environment.',
+    };
+  }
+
+  let ai: GeminiClientLike;
+  try {
+    ai = clientFactory ? clientFactory() : createGeminiClient();
+  } catch (err: any) {
+    const classified = classifyGeminiError(err);
+    return {
+      ok: false,
+      keyPresent: Boolean(apiKey),
+      authenticated: false,
+      modelAvailable: false,
+      responseValid: false,
+      httpStatus: classified.httpStatus,
+      errorCode: mapCategoryToErrorCode(classified.category),
+      model: PRIMARY_GEMINI_MODEL,
+      durationMs: Date.now() - start,
+      guidance: classified.safeMessage,
+      diagnosticSummary: classified.rawSummary,
+    };
+  }
+
+  try {
+    const interaction = await ai.interactions.create(
+      {
+        model: PRIMARY_GEMINI_MODEL,
+        input: 'Reply strictly with: OK',
+        generation_config: { thinking_level: 'low' },
+      },
+      { timeout_ms: 12_000, retries: { strategy: 'none' } }
+    );
+    const text = extractInteractionOutputText(interaction);
+    const valid = Boolean(text && text.trim().length > 0);
+    return {
+      ok: valid,
+      keyPresent: true,
+      authenticated: true,
+      modelAvailable: true,
+      responseValid: valid,
+      httpStatus: valid ? 200 : 502,
+      errorCode: valid ? null : 'EMPTY_RESPONSE',
+      model: PRIMARY_GEMINI_MODEL,
+      durationMs: Date.now() - start,
+      guidance: valid
+        ? 'تم التحقق من المفتاح والمصادقة واستدعاء Gemini بنجاح.'
+        : 'تمت المصادقة ولكن عاد النموذج برد فارغ.',
+      diagnosticSummary: null,
+    };
+  } catch (err: any) {
+    const classified = classifyGeminiError(err);
+    const isAuthFailure = classified.category === 'auth_error';
+    const isPermDenied = classified.category === 'permission_denied';
+    const isModel404 = classified.category === 'model_unavailable';
+    const guidance = isAuthFailure
+      ? 'المفتاح مرفوض أو غير صالح (401). أنشئ مفتاح GEMINI_API_KEY جديدًا من Google AI Studio واربطه بالمشروع الصحيح ثم حدّثه في Vercel.'
+      : isPermDenied
+      ? 'المفتاح موجود لكنه مقيّد أو يفتقر للصلاحيات (403). تأكد في Google AI Studio / Cloud Console من تفعيل Generative Language API وعدم وجود قيود HTTP Referrer تمنع خوادم Vercel.'
+      : isModel404
+      ? `النموذج (${PRIMARY_GEMINI_MODEL}) غير متاح لهذا المشروع أو مسار API غير مدعوم (404).`
+      : classified.category === 'rate_limit'
+      ? 'تم تجاوز حد الاستخدام المسموح للمفتاح حاليًا (429).'
+      : classified.category === 'high_demand'
+      ? 'ضغط مؤقت على خوادم Google Gemini (503) — المصادقة نفسها صالحة.'
+      : classified.safeMessage;
+
+    return {
+      ok: false,
+      keyPresent: true,
+      authenticated: !isAuthFailure && !isPermDenied,
+      modelAvailable: !isModel404 && !isAuthFailure && !isPermDenied,
+      responseValid: false,
+      httpStatus: classified.httpStatus,
+      errorCode: mapCategoryToErrorCode(classified.category),
+      model: PRIMARY_GEMINI_MODEL,
+      durationMs: Date.now() - start,
+      guidance,
+      diagnosticSummary: sanitizeSecret(classified.rawSummary).slice(0, 260),
+    };
+  }
 }

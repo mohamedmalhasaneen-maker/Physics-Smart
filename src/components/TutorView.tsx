@@ -119,23 +119,40 @@ export function TutorView({
         ? `استغرق تجهيز الإجابة وقتًا أطول من المعتاد${diagTag}. سؤالك محفوظ كما هو، اضغط «إعادة المحاولة».`
         : `Preparing the answer took longer than usual${diagTag}. Your question is saved — please click Retry.`;
     }
+    if (source === 'vercel_env') {
+      return lang === 'ar'
+        ? `مفتاح GEMINI_API_KEY غير مضاف أو غير مفعّل في بيئة Production على Vercel (${errorCode || 401}). يرجى إضافته في إعدادات Vercel ثم عمل Redeploy.`
+        : `GEMINI_API_KEY is missing or inactive in Vercel Production (${errorCode || 401}). Add it in Vercel Production settings and Redeploy.`;
+    }
+    if (errorCode === 'PERMISSION_DENIED' || status === 403 || source === 'gemini_permissions') {
+      return lang === 'ar'
+        ? `مفتاح Gemini موجود لكنه مرفوض بسبب الصلاحيات أو قيود المشروع (403 / PERMISSION_DENIED). تحقق من قيود المفتاح وتفعيل Gemini API في Google AI Studio.`
+        : `Gemini API key lacks permissions or is restricted (403 / PERMISSION_DENIED). Check API restrictions in Google AI Studio.`;
+    }
+    if (errorCode === 'AUTH_ERROR' || status === 401 || source === 'gemini_auth') {
+      return lang === 'ar'
+        ? `مفتاح Gemini API غير صالح أو مرفوض من Google (${errorCode || 401}). يرجى إنشاء مفتاح جديد من Google AI Studio وتحديث GEMINI_API_KEY في Vercel.`
+        : `Gemini API key is invalid or rejected (401). Generate a valid key in Google AI Studio and update GEMINI_API_KEY in Vercel.`;
+    }
     if (status === 404 || errorCode === 'NOT_FOUND' || lower.includes('the page could not be found')) {
       return lang === 'ar'
         ? 'مسار المدرس الذكي على الخادم غير متاح حاليًا (HTTP 404). سؤالك محفوظ — يرجى التحقق من نشر دوال API على Vercel.'
         : 'The AI Tutor API route was not found on the server (HTTP 404). Your question is saved.';
     }
-    if (errorCode === 'AUTH_ERROR' || status === 401 || status === 403 || source === 'vercel_env') {
+    if (errorCode === 'MODEL_UNAVAILABLE') {
       return lang === 'ar'
-        ? `خدمة المدرس الذكي غير مفعّلة في بيئة النشر بسبب مفتاح Gemini (${errorCode || status || 'AUTH'}). يرجى مراجعة GEMINI_API_KEY في Vercel.`
-        : `AI Tutor is not configured in Production (${errorCode || status || 'AUTH'}). Check GEMINI_API_KEY in Vercel.`;
+        ? `نموذج Gemini المطلوب غير متاح لهذا المشروع حاليًا${diagTag}. سؤالك محفوظ — اضغط «إعادة المحاولة».`
+        : `The requested Gemini model is unavailable for this project${diagTag}. Your question is saved — click Retry.`;
+    }
+    if (errorCode === 'RATE_LIMIT' || status === 429) {
+      return lang === 'ar'
+        ? `تم تجاوز حد الطلبات المسموح حاليًا على خدمة Gemini${diagTag}. سؤالك محفوظ — انتظر لحظات واضغط «إعادة المحاولة».`
+        : `Gemini rate limit reached${diagTag}. Your question is saved — wait a moment and click Retry.`;
     }
     if (
       errorCode === 'HIGH_DEMAND' ||
-      errorCode === 'RATE_LIMIT' ||
       errorCode === 'SERVER_ERROR' ||
-      errorCode === 'MODEL_UNAVAILABLE' ||
       status === 503 ||
-      status === 429 ||
       status === 500 ||
       status === 502 ||
       lower.includes('503') ||
