@@ -27,6 +27,7 @@ export type GeminiErrorCategory =
   | 'model_unavailable'
   | 'auth_error'
   | 'permission_denied'
+  | 'attachment_rejected'
   | 'bad_request'
   | 'empty_response'
   | 'unknown_error';
@@ -66,6 +67,11 @@ export interface GeminiClientLike {
   models?: {
     list?: (params?: any) => Promise<any>;
     get?: (params: { model: string }) => Promise<any>;
+  };
+  files?: {
+    upload?: (params: any) => Promise<any>;
+    get?: (params: { name: string }) => Promise<any>;
+    delete?: (params: { name: string }) => Promise<any>;
   };
 }
 
@@ -145,6 +151,7 @@ export function createGeminiClient(): GeminiClientLike {
   }
   return new GoogleGenAI({
     apiKey,
+    apiVersion: 'v1beta',
     httpOptions: {
       headers: {
         'User-Agent': 'physics-smart-aistudio',
@@ -256,7 +263,34 @@ export function classifyGeminiError(err: any): ClassifiedGeminiError {
     };
   }
 
-  // 4. Bad request / invalid input / validation error -> NEVER retry (except previous_interaction_id handled separately)
+  // 1c. Expired/inaccessible uploaded Gemini File reference vs generic 403
+  // Note: handled above only if permission_denied; let's check explicit file-uri expiration before bad_request
+  // 4a. Gemini explicitly rejected the attached image/PDF or file URI -> NEVER retry
+  if (
+    (status === 400 || status === 422 || lower.includes('invalid_argument')) &&
+    (lower.includes('unable to process input') ||
+      lower.includes('document has no pages') ||
+      lower.includes('pdf') ||
+      lower.includes('image') ||
+      lower.includes('mime') ||
+      lower.includes('unsupported content') ||
+      lower.includes('corrupt') ||
+      lower.includes('password') ||
+      lower.includes('file uri') ||
+      lower.includes('not active'))
+  ) {
+    return {
+      category: 'attachment_rejected',
+      httpStatus: 422,
+      retryableOnSameModel: false,
+      triggersFallback: false,
+      safeMessage:
+        'رفض خادم الذكاء الاصطناعي قراءة الملف المرفق (قد يكون تالفًا أو مشفّرًا أو بصيغة غير مدعومة). يرجى تجربة ملف أو صورة أوضح.',
+      rawSummary,
+    };
+  }
+
+  // 4b. Bad request / invalid input / validation error -> NEVER retry (except previous_interaction_id handled separately)
   if (
     status === 400 ||
     status === 422 ||
@@ -513,6 +547,7 @@ function buildInteractionParamsForModel(
 ): Record<string, any> {
   const usePrev = Boolean(includePreviousInteractionId && payload.previous_interaction_id);
   const params: Record<string, any> = {
+    api_version: 'v1beta',
     model,
     input: usePrev ? payload.input : (payload.inputWithoutPreviousId ?? payload.input),
   };
@@ -776,6 +811,8 @@ function mapCategoryToErrorCode(cat: GeminiErrorCategory): string {
       return 'AUTH_ERROR';
     case 'permission_denied':
       return 'PERMISSION_DENIED';
+    case 'attachment_rejected':
+      return 'ATTACHMENT_REJECTED';
     case 'bad_request':
       return 'BAD_REQUEST';
     case 'model_unavailable':
@@ -968,6 +1005,7 @@ export async function executeGeminiInteractionWithResilience(
         if (
           classified.category === 'auth_error' ||
           classified.category === 'permission_denied' ||
+          classified.category === 'attachment_rejected' ||
           classified.category === 'bad_request'
         ) {
           const meta: GeminiExecutionMeta = {
@@ -1257,6 +1295,7 @@ export async function executeGeminiInteractionStreamWithResilience(
         if (
           classified.category === 'auth_error' ||
           classified.category === 'permission_denied' ||
+          classified.category === 'attachment_rejected' ||
           classified.category === 'bad_request'
         ) {
           const meta: GeminiExecutionMeta = {

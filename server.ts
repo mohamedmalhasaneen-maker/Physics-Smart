@@ -6,6 +6,8 @@ import dotenv from 'dotenv';
 import { Type } from '@google/genai';
 import { evaluate } from 'mathjs';
 import {
+  classifyGeminiError,
+  createGeminiClient,
   executeGeminiInteractionStreamWithResilience,
   executeGeminiInteractionWithResilience,
   GeminiAuthCheckReport,
@@ -17,6 +19,16 @@ import {
   sanitizeSecret,
   verifyGeminiAuthAndConnectivity,
 } from './server/geminiResilience.ts';
+import {
+  AttachmentValidationError,
+  buildInteractionAttachmentPart,
+  deleteGeminiFileSafe,
+  IncomingAttachmentPayload,
+  logAttachmentStage,
+  uploadAttachmentToGeminiFiles,
+  validateAndDecodeAttachment,
+  validateBinaryBufferAttachment,
+} from './server/attachmentHandler.ts';
 
 dotenv.config();
 
@@ -82,7 +94,8 @@ Track: ${trackLabel} | Grade: ${opts.grade || 'General'} | Level: ${opts.level} 
 ${languageInstruction}
 ${modeInstructions}
 ${detailInstruction}
-RULES: Verify laws, constants (state assumptions like g=9.8 or 10 m/s^2), and SI units; distinguish exact vs rounded results; ask for missing values if ambiguous; maintain conversation continuity; wrap display equations in $$...$$ and inline formulas in $...$.`;
+RULES: Verify laws, constants (state assumptions like g=9.8 or 10 m/s^2), and SI units; distinguish exact vs rounded results; ask for missing values if ambiguous; maintain conversation continuity; wrap display equations in $$...$$ and inline formulas in $...$.
+ATTACHMENTS: When an image or PDF is attached, carefully read all equations, graphs, diagrams, tables, and multi-page content in page order, cite page numbers when answering about a PDF, and if any part is blurry or unreadable NEVER guess—tell the student clearly which part is unclear.`;
 
   if (systemInstructionCache.size >= SYSTEM_INSTRUCTION_CACHE_MAX) {
     const oldestKey = systemInstructionCache.keys().next().value;
@@ -92,14 +105,9 @@ RULES: Verify laws, constants (state assumptions like g=9.8 or 10 m/s^2), and SI
   return template;
 }
 
-function buildAttachmentPart(attachment?: { mimeType: string; data: string }) {
-  if (!attachment?.data || !attachment?.mimeType) return null;
-  const isImage = attachment.mimeType.toLowerCase().startsWith('image/');
-  return {
-    type: isImage ? 'image' : 'document',
-    data: attachment.data,
-    mime_type: attachment.mimeType,
-  };
+function buildAttachmentPart(attachment?: IncomingAttachmentPayload | null) {
+  const validated = validateAndDecodeAttachment(attachment);
+  return buildInteractionAttachmentPart(validated);
 }
 
 function formatCompactHistory(history?: Array<{ role: 'user' | 'model'; text: string }>): string {
@@ -127,6 +135,9 @@ function inferErrorSource(
   if (err.errorCode === 'PERMISSION_DENIED') {
     return 'gemini_permissions';
   }
+  if (err.errorCode === 'ATTACHMENT_REJECTED') {
+    return 'gemini_api';
+  }
   if (err.errorCode === 'BAD_REQUEST' || err.errorCode === 'INTERNAL_ERROR') {
     return 'backend';
   }
@@ -134,6 +145,18 @@ function inferErrorSource(
 }
 
 function buildErrorPayload(err: any, fallbackMessage: string) {
+  if (err instanceof AttachmentValidationError) {
+    return {
+      status: err.status,
+      body: {
+        error: err.message,
+        errorCode: err.errorCode,
+        retryable: err.retryable,
+        source: 'backend_validation',
+        stage: err.stage,
+      },
+    };
+  }
   if (err instanceof GeminiResilienceError) {
     const source = inferErrorSource(err);
     return {
@@ -163,14 +186,17 @@ function buildErrorPayload(err: any, fallbackMessage: string) {
       },
     };
   }
-  const safeMsg = sanitizeSecret(err?.message || fallbackMessage);
+  const status = typeof err?.status === 'number' && err.status >= 100 && err.status < 600 ? err.status : 500;
+  const errorCode = err?.errorCode || (status === 413 ? 'FILE_TOO_LARGE' : status === 400 ? 'BAD_REQUEST' : 'INTERNAL_ERROR');
+  const errorMsg = err?.message || fallbackMessage;
+  const safeMsg = sanitizeSecret(errorMsg);
   return {
-    status: 500,
+    status,
     body: {
-      error: fallbackMessage,
-      errorCode: 'INTERNAL_ERROR',
-      retryable: true,
-      source: 'backend',
+      error: errorMsg,
+      errorCode,
+      retryable: status !== 400 && status !== 413 && status !== 422 && status !== 401 && status !== 403,
+      source: status === 400 || status === 413 || status === 422 ? 'backend_validation' : 'backend',
       detail: process.env.NODE_ENV === 'production' ? undefined : safeMsg,
     },
   };
@@ -358,6 +384,99 @@ app.post('/api/math/verify', (req, res) => {
   }
 });
 
+// Binary Attachment Upload to Gemini Files API (avoids +33% Base64 overhead and enables URI reuse across turns)
+app.post(
+  '/api/ai/files/upload',
+  express.raw({
+    type: ['application/pdf', 'image/jpeg', 'image/png', 'image/webp', 'application/octet-stream'],
+    limit: '4.3mb',
+  }),
+  async (req, res) => {
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    const declaredMime = String(req.headers['x-file-mime'] || req.headers['content-type'] || '');
+    const rawName = String(req.headers['x-file-name'] || 'attachment');
+    let fileNameDecoded = rawName;
+    try {
+      fileNameDecoded = decodeURIComponent(rawName);
+    } catch {
+      // keep rawName
+    }
+
+    try {
+      const buffer = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+      const validated = validateBinaryBufferAttachment(buffer, {
+        declaredMime,
+        name: fileNameDecoded,
+        fn: 'POST /api/ai/files/upload',
+      });
+
+      const clientFactory = app.locals?.geminiClientFactory as (() => GeminiClientLike) | undefined;
+      const ai = clientFactory ? clientFactory() : createGeminiClient();
+      const uploaded = await uploadAttachmentToGeminiFiles(ai, validated);
+
+      res.status(200).json({
+        ok: true,
+        uri: uploaded.uri,
+        fileName: uploaded.fileName,
+        mimeType: uploaded.mimeType,
+        sizeBytes: validated.sizeBytes,
+        pageCount: validated.pageCount ?? null,
+        expiresAt: uploaded.expiresAt ?? null,
+      });
+    } catch (err: any) {
+      if (err instanceof AttachmentValidationError) {
+        const { status, body } = buildErrorPayload(err, err.message);
+        res.status(status).json(body);
+        return;
+      }
+      const classified = classifyGeminiError(err);
+      logAttachmentStage({
+        stage: 'gemini_files_upload_error',
+        fn: 'POST /api/ai/files/upload',
+        fileKind: declaredMime.includes('pdf') ? 'document' : 'image',
+        mimeType: declaredMime,
+        sizeBytes: Buffer.isBuffer(req.body) ? req.body.length : 0,
+        transport: 'binary_upload',
+        httpStatus: classified.httpStatus,
+        errorCode: classified.category === 'auth_error' ? 'AUTH_ERROR' : classified.category === 'permission_denied' ? 'PERMISSION_DENIED' : 'UPLOAD_FAILED',
+        summary: classified.rawSummary,
+      });
+      const isAuth = classified.category === 'auth_error' || classified.category === 'permission_denied';
+      res.status(isAuth ? classified.httpStatus : 502).json({
+        error: isAuth
+          ? classified.safeMessage
+          : 'تعذر رفع الملف إلى خادم Gemini المؤقت حاليًا. يمكنك المحاولة مرة أخرى.',
+        errorCode:
+          classified.category === 'auth_error'
+            ? 'AUTH_ERROR'
+            : classified.category === 'permission_denied'
+            ? 'PERMISSION_DENIED'
+            : 'UPLOAD_FAILED',
+        retryable: !isAuth,
+        source: isAuth ? 'gemini_auth' : 'gemini_api',
+      });
+    }
+  }
+);
+
+// Cleanup temporary Gemini Files API reference when a student removes an attachment or resets chat
+app.delete('/api/ai/files', async (req, res) => {
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  const fileName = String((req.body as any)?.fileName || req.query?.fileName || '').trim();
+  if (!fileName) {
+    res.status(400).json({ ok: false, errorCode: 'BAD_REQUEST', error: 'fileName is required.' });
+    return;
+  }
+  try {
+    const clientFactory = app.locals?.geminiClientFactory as (() => GeminiClientLike) | undefined;
+    const ai = clientFactory ? clientFactory() : createGeminiClient();
+    const deleted = await deleteGeminiFileSafe(ai, fileName);
+    res.json({ ok: deleted });
+  } catch {
+    res.json({ ok: false });
+  }
+});
+
 // AI Physics Tutor Endpoint using Gemini Interactions API (SSE Streaming + Fast Failover)
 app.post('/api/ai/tutor', async (req, res) => {
   const reqStart = Date.now();
@@ -391,7 +510,7 @@ app.post('/api/ai/tutor', async (req, res) => {
       lessonContext?: string;
       history?: Array<{ role: 'user' | 'model'; text: string }>;
       previousInteractionId?: string;
-      attachment?: { mimeType: string; data: string };
+      attachment?: IncomingAttachmentPayload;
       stream?: boolean;
     };
 
@@ -587,7 +706,7 @@ app.post('/api/ai/solver', async (req, res) => {
       manualTarget?: string;
       language?: 'ar' | 'en' | 'bilingual';
       track?: string;
-      attachment?: { mimeType: string; data: string };
+      attachment?: IncomingAttachmentPayload;
     };
 
     if (!problemText.trim() && manualGivens.length === 0 && !attachment) {

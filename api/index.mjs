@@ -59,6 +59,7 @@ function createGeminiClient() {
   }
   return new GoogleGenAI({
     apiKey,
+    apiVersion: "v1beta",
     httpOptions: {
       headers: {
         "User-Agent": "physics-smart-aistudio"
@@ -145,6 +146,16 @@ function classifyGeminiError(err) {
       retryableOnSameModel: false,
       triggersFallback: true,
       safeMessage: "\u0627\u0644\u0646\u0645\u0648\u0630\u062C \u0627\u0644\u0623\u0633\u0627\u0633\u064A \u063A\u064A\u0631 \u0645\u062A\u0627\u062D \u062D\u0627\u0644\u064A\u064B\u0627\u060C \u062C\u0627\u0631\u064D \u0627\u0644\u062A\u062D\u0648\u064A\u0644 \u0644\u0644\u0628\u062F\u064A\u0644.",
+      rawSummary
+    };
+  }
+  if ((status === 400 || status === 422 || lower.includes("invalid_argument")) && (lower.includes("unable to process input") || lower.includes("document has no pages") || lower.includes("pdf") || lower.includes("image") || lower.includes("mime") || lower.includes("unsupported content") || lower.includes("corrupt") || lower.includes("password") || lower.includes("file uri") || lower.includes("not active"))) {
+    return {
+      category: "attachment_rejected",
+      httpStatus: 422,
+      retryableOnSameModel: false,
+      triggersFallback: false,
+      safeMessage: "\u0631\u0641\u0636 \u062E\u0627\u062F\u0645 \u0627\u0644\u0630\u0643\u0627\u0621 \u0627\u0644\u0627\u0635\u0637\u0646\u0627\u0639\u064A \u0642\u0631\u0627\u0621\u0629 \u0627\u0644\u0645\u0644\u0641 \u0627\u0644\u0645\u0631\u0641\u0642 (\u0642\u062F \u064A\u0643\u0648\u0646 \u062A\u0627\u0644\u0641\u064B\u0627 \u0623\u0648 \u0645\u0634\u0641\u0651\u0631\u064B\u0627 \u0623\u0648 \u0628\u0635\u064A\u063A\u0629 \u063A\u064A\u0631 \u0645\u062F\u0639\u0648\u0645\u0629). \u064A\u0631\u062C\u0649 \u062A\u062C\u0631\u0628\u0629 \u0645\u0644\u0641 \u0623\u0648 \u0635\u0648\u0631\u0629 \u0623\u0648\u0636\u062D.",
       rawSummary
     };
   }
@@ -329,6 +340,7 @@ async function resolveVerifiedFallbackModels(ai, nowFn = Date.now) {
 function buildInteractionParamsForModel(model, payload, includePreviousInteractionId, forceLowThinking = false, stream = false) {
   const usePrev = Boolean(includePreviousInteractionId && payload.previous_interaction_id);
   const params = {
+    api_version: "v1beta",
     model,
     input: usePrev ? payload.input : payload.inputWithoutPreviousId ?? payload.input
   };
@@ -527,6 +539,8 @@ function mapCategoryToErrorCode(cat) {
       return "AUTH_ERROR";
     case "permission_denied":
       return "PERMISSION_DENIED";
+    case "attachment_rejected":
+      return "ATTACHMENT_REJECTED";
     case "bad_request":
       return "BAD_REQUEST";
     case "model_unavailable":
@@ -699,7 +713,7 @@ async function executeGeminiInteractionWithResilience(payload, options) {
           httpStatus: classified.httpStatus,
           summary: classified.rawSummary
         });
-        if (classified.category === "auth_error" || classified.category === "permission_denied" || classified.category === "bad_request") {
+        if (classified.category === "auth_error" || classified.category === "permission_denied" || classified.category === "attachment_rejected" || classified.category === "bad_request") {
           const meta2 = {
             model: fallbackModel,
             usedFallback: true,
@@ -949,7 +963,7 @@ async function executeGeminiInteractionStreamWithResilience(payload, callbacks, 
           httpStatus: classified.httpStatus,
           summary: classified.rawSummary
         });
-        if (classified.category === "auth_error" || classified.category === "permission_denied" || classified.category === "bad_request") {
+        if (classified.category === "auth_error" || classified.category === "permission_denied" || classified.category === "attachment_rejected" || classified.category === "bad_request") {
           const meta2 = {
             model: fallbackModel,
             usedFallback: true,
@@ -1073,6 +1087,418 @@ async function verifyGeminiAuthAndConnectivity(clientFactory) {
   }
 }
 
+// server/attachmentHandler.ts
+var ALLOWED_IMAGE_MIMES = ["image/jpeg", "image/png", "image/webp"];
+var ALLOWED_PDF_MIME = "application/pdf";
+var MAX_INLINE_RAW_BYTES = 3 * 1024 * 1024;
+var MAX_BINARY_UPLOAD_BYTES = Math.floor(4.2 * 1024 * 1024);
+var MAX_PDF_PAGES = 50;
+var AttachmentValidationError = class extends Error {
+  constructor(message, opts) {
+    super(message);
+    this.name = "AttachmentValidationError";
+    this.status = opts.status;
+    this.errorCode = opts.errorCode;
+    this.stage = opts.stage;
+    this.retryable = opts.retryable ?? false;
+  }
+};
+function logAttachmentStage(info) {
+  console.log(
+    "[AttachmentPipeline]",
+    JSON.stringify({
+      stage: info.stage,
+      fn: info.fn,
+      fileKind: info.fileKind,
+      mimeType: info.mimeType || "unknown",
+      sizeBytes: info.sizeBytes,
+      pageCount: info.pageCount ?? null,
+      transport: info.transport ?? null,
+      httpStatus: info.httpStatus ?? null,
+      errorCode: info.errorCode ?? null,
+      summary: info.summary ? sanitizeSecret(info.summary).slice(0, 220) : null
+    })
+  );
+}
+function normalizeDeclaredMime(rawMime) {
+  const cleaned = String(rawMime || "").toLowerCase().split(";")[0].trim();
+  if (cleaned === "image/jpg" || cleaned === "image/pjpeg") return "image/jpeg";
+  return cleaned;
+}
+function detectMagicMimeType(buffer) {
+  if (!buffer || buffer.length < 4) return null;
+  if (buffer[0] === 255 && buffer[1] === 216 && buffer[2] === 255) {
+    return "image/jpeg";
+  }
+  if (buffer.length >= 8 && buffer[0] === 137 && buffer[1] === 80 && buffer[2] === 78 && buffer[3] === 71 && buffer[4] === 13 && buffer[5] === 10 && buffer[6] === 26 && buffer[7] === 10) {
+    return "image/png";
+  }
+  if (buffer.length >= 12 && buffer.subarray(0, 4).toString("ascii") === "RIFF" && buffer.subarray(8, 12).toString("ascii") === "WEBP") {
+    return "image/webp";
+  }
+  const head = buffer.subarray(0, Math.min(buffer.length, 1024)).toString("latin1");
+  if (head.includes("%PDF-")) {
+    return "application/pdf";
+  }
+  return null;
+}
+function inspectPdfBuffer(buffer) {
+  const head = buffer.subarray(0, Math.min(buffer.length, 1024)).toString("latin1");
+  if (!head.includes("%PDF-")) {
+    return { validHeader: false, encrypted: false, pageCount: 0 };
+  }
+  const content = buffer.toString("latin1");
+  const encrypted = /\/Encrypt\b/.test(content);
+  const pageMatches = content.match(/\/Type\s*\/Page\b(?!s)/g);
+  const pageCount = pageMatches && pageMatches.length > 0 ? pageMatches.length : 1;
+  return { validHeader: true, encrypted, pageCount };
+}
+function isValidGeminiFileUri(uri) {
+  try {
+    const parsed = new URL(uri);
+    return parsed.protocol === "https:" && parsed.hostname === "generativelanguage.googleapis.com" && parsed.pathname.includes("/files/");
+  } catch {
+    return false;
+  }
+}
+function validateBinaryBufferAttachment(buffer, opts = {}) {
+  const fn = opts.fn || "validateBinaryBufferAttachment";
+  const maxBytes = opts.maxBytes ?? MAX_BINARY_UPLOAD_BYTES;
+  const declared = normalizeDeclaredMime(opts.declaredMime);
+  const name = String(opts.name || "attachment").slice(0, 120);
+  if (!buffer || buffer.length === 0) {
+    logAttachmentStage({
+      stage: "backend_validate",
+      fn,
+      fileKind: declared === "application/pdf" ? "document" : "image",
+      mimeType: declared,
+      sizeBytes: 0,
+      httpStatus: 400,
+      errorCode: "EMPTY_FILE",
+      summary: "Uploaded buffer is empty (0 bytes)."
+    });
+    throw new AttachmentValidationError("\u0627\u0644\u0645\u0644\u0641 \u0627\u0644\u0645\u0631\u0641\u0642 \u0641\u0627\u0631\u063A (0 \u0628\u0627\u064A\u062A). \u064A\u0631\u062C\u0649 \u0627\u062E\u062A\u064A\u0627\u0631 \u0645\u0644\u0641 \u0635\u0627\u0644\u062D.", {
+      status: 400,
+      errorCode: "EMPTY_FILE",
+      stage: "backend_validate"
+    });
+  }
+  if (buffer.length > maxBytes) {
+    const limitMb = (maxBytes / (1024 * 1024)).toFixed(1);
+    logAttachmentStage({
+      stage: "backend_validate",
+      fn,
+      fileKind: declared === "application/pdf" ? "document" : "image",
+      mimeType: declared,
+      sizeBytes: buffer.length,
+      httpStatus: 413,
+      errorCode: "FILE_TOO_LARGE",
+      summary: `Buffer ${buffer.length} bytes exceeds max ${maxBytes} bytes.`
+    });
+    throw new AttachmentValidationError(
+      `\u062D\u062C\u0645 \u0627\u0644\u0645\u0644\u0641 (${(buffer.length / (1024 * 1024)).toFixed(2)} \u0645\u064A\u062C\u0627\u0628\u0627\u064A\u062A) \u064A\u062A\u062C\u0627\u0648\u0632 \u0627\u0644\u062D\u062F \u0627\u0644\u0645\u0633\u0645\u0648\u062D (${limitMb} \u0645\u064A\u062C\u0627\u0628\u0627\u064A\u062A).`,
+      {
+        status: 413,
+        errorCode: "FILE_TOO_LARGE",
+        stage: "backend_validate"
+      }
+    );
+  }
+  const detectedMime = detectMagicMimeType(buffer);
+  if (!detectedMime) {
+    const isAllowedDeclared = declared === ALLOWED_PDF_MIME || ALLOWED_IMAGE_MIMES.includes(declared);
+    const errorCode = isAllowedDeclared ? "CORRUPTED_FILE" : "UNSUPPORTED_FILE_TYPE";
+    const message = isAllowedDeclared ? "\u0627\u0644\u0645\u0644\u0641 \u062A\u0627\u0644\u0641 \u0623\u0648 \u0644\u0627 \u064A\u0637\u0627\u0628\u0642 \u0635\u064A\u063A\u0629 \u0627\u0644\u0635\u0648\u0631/PDF \u0627\u0644\u0642\u064A\u0627\u0633\u064A\u0629. \u064A\u0631\u062C\u0649 \u0627\u0644\u062A\u0623\u0643\u062F \u0645\u0646 \u0633\u0644\u0627\u0645\u0629 \u0627\u0644\u0645\u0644\u0641 \u0648\u0625\u0639\u0627\u062F\u0629 \u0627\u062E\u062A\u064A\u0627\u0631\u0647." : "\u0646\u0648\u0639 \u0627\u0644\u0645\u0644\u0641 \u063A\u064A\u0631 \u0645\u062F\u0639\u0648\u0645. \u0627\u0644\u0635\u064A\u063A \u0627\u0644\u0645\u062F\u0639\u0648\u0645\u0629 \u0641\u0642\u0637 \u0647\u064A: JPG \u0648JPEG \u0648PNG \u0648WEBP \u0648PDF.";
+    logAttachmentStage({
+      stage: "backend_validate",
+      fn,
+      fileKind: declared === "application/pdf" ? "document" : "unknown",
+      mimeType: declared || "unknown",
+      sizeBytes: buffer.length,
+      httpStatus: 400,
+      errorCode,
+      summary: "Magic bytes did not match JPG, PNG, WEBP, or PDF."
+    });
+    throw new AttachmentValidationError(message, {
+      status: 400,
+      errorCode,
+      stage: "backend_validate"
+    });
+  }
+  const finalMime = detectedMime;
+  if (finalMime === "application/pdf") {
+    const pdfInfo = inspectPdfBuffer(buffer);
+    if (!pdfInfo.validHeader) {
+      throw new AttachmentValidationError("\u0645\u0644\u0641 PDF \u062A\u0627\u0644\u0641 \u0623\u0648 \u063A\u064A\u0631 \u0635\u0627\u0644\u062D.", {
+        status: 400,
+        errorCode: "CORRUPTED_FILE",
+        stage: "backend_validate_pdf"
+      });
+    }
+    if (pdfInfo.encrypted) {
+      logAttachmentStage({
+        stage: "backend_validate_pdf",
+        fn,
+        fileKind: "document",
+        mimeType: finalMime,
+        sizeBytes: buffer.length,
+        httpStatus: 422,
+        errorCode: "PDF_ENCRYPTED",
+        summary: "PDF contains /Encrypt dictionary (password protected)."
+      });
+      throw new AttachmentValidationError(
+        "\u0645\u0644\u0641 \u0627\u0644\u0640 PDF \u0645\u062D\u0645\u064A \u0628\u0643\u0644\u0645\u0629 \u0645\u0631\u0648\u0631 \u0623\u0648 \u0645\u0634\u0641\u0651\u0631 \u0648\u0644\u0627 \u064A\u0645\u0643\u0646 \u0642\u0631\u0627\u0621\u062A\u0647. \u064A\u0631\u062C\u0649 \u0625\u0632\u0627\u0644\u0629 \u0643\u0644\u0645\u0629 \u0627\u0644\u0645\u0631\u0648\u0631 \u062B\u0645 \u0625\u0639\u0627\u062F\u0629 \u0631\u0641\u0639\u0647.",
+        {
+          status: 422,
+          errorCode: "PDF_ENCRYPTED",
+          stage: "backend_validate_pdf"
+        }
+      );
+    }
+    if (pdfInfo.pageCount > MAX_PDF_PAGES) {
+      logAttachmentStage({
+        stage: "backend_validate_pdf",
+        fn,
+        fileKind: "document",
+        mimeType: finalMime,
+        sizeBytes: buffer.length,
+        pageCount: pdfInfo.pageCount,
+        httpStatus: 413,
+        errorCode: "PDF_TOO_MANY_PAGES",
+        summary: `PDF page count ${pdfInfo.pageCount} exceeds limit ${MAX_PDF_PAGES}.`
+      });
+      throw new AttachmentValidationError(
+        `\u0639\u062F\u062F \u0635\u0641\u062D\u0627\u062A \u0645\u0644\u0641 PDF (${pdfInfo.pageCount} \u0635\u0641\u062D\u0629) \u064A\u062A\u062C\u0627\u0648\u0632 \u0627\u0644\u062D\u062F \u0627\u0644\u0623\u0642\u0635\u0649 \u0627\u0644\u0645\u0633\u0645\u0648\u062D (${MAX_PDF_PAGES} \u0635\u0641\u062D\u0629).`,
+        {
+          status: 413,
+          errorCode: "PDF_TOO_MANY_PAGES",
+          stage: "backend_validate_pdf"
+        }
+      );
+    }
+    return {
+      kind: "document",
+      mimeType: "application/pdf",
+      name,
+      sizeBytes: buffer.length,
+      pageCount: pdfInfo.pageCount,
+      buffer
+    };
+  }
+  return {
+    kind: "image",
+    mimeType: finalMime,
+    name,
+    sizeBytes: buffer.length,
+    buffer
+  };
+}
+function validateAndDecodeAttachment(attachment) {
+  if (!attachment) return null;
+  const declared = normalizeDeclaredMime(attachment.mimeType);
+  const name = String(attachment.name || "attachment").slice(0, 120);
+  if (typeof attachment.uri === "string" && attachment.uri.trim().length > 0) {
+    const uri = attachment.uri.trim();
+    if (!isValidGeminiFileUri(uri)) {
+      logAttachmentStage({
+        stage: "backend_validate_uri",
+        fn: "validateAndDecodeAttachment",
+        fileKind: declared === "application/pdf" ? "document" : "image",
+        mimeType: declared,
+        sizeBytes: attachment.sizeBytes || 0,
+        httpStatus: 400,
+        errorCode: "INVALID_FILE_URI",
+        summary: "Attachment URI host/path validation failed."
+      });
+      throw new AttachmentValidationError("\u0645\u0631\u062C\u0639 \u0627\u0644\u0645\u0644\u0641 \u063A\u064A\u0631 \u0635\u0627\u0644\u062D. \u064A\u0631\u062C\u0649 \u0625\u0639\u0627\u062F\u0629 \u0631\u0641\u0639 \u0627\u0644\u0645\u0644\u0641.", {
+        status: 400,
+        errorCode: "INVALID_FILE_URI",
+        stage: "backend_validate_uri"
+      });
+    }
+    if (declared !== ALLOWED_PDF_MIME && !ALLOWED_IMAGE_MIMES.includes(declared)) {
+      throw new AttachmentValidationError(
+        "\u0646\u0648\u0639 \u0627\u0644\u0645\u0644\u0641 \u063A\u064A\u0631 \u0645\u062F\u0639\u0648\u0645. \u0627\u0644\u0635\u064A\u063A \u0627\u0644\u0645\u062F\u0639\u0648\u0645\u0629 \u0641\u0642\u0637 \u0647\u064A: JPG \u0648JPEG \u0648PNG \u0648WEBP \u0648PDF.",
+        {
+          status: 400,
+          errorCode: "UNSUPPORTED_FILE_TYPE",
+          stage: "backend_validate_uri"
+        }
+      );
+    }
+    const kind = declared === ALLOWED_PDF_MIME ? "document" : "image";
+    logAttachmentStage({
+      stage: "backend_validated",
+      fn: "validateAndDecodeAttachment",
+      fileKind: kind,
+      mimeType: declared,
+      sizeBytes: attachment.sizeBytes || 0,
+      pageCount: attachment.pageCount,
+      transport: "files_api_uri"
+    });
+    return {
+      kind,
+      mimeType: declared,
+      name,
+      sizeBytes: attachment.sizeBytes || 0,
+      pageCount: attachment.pageCount,
+      uri,
+      fileName: attachment.fileName
+    };
+  }
+  if (typeof attachment.data !== "string" || attachment.data.trim().length === 0) {
+    logAttachmentStage({
+      stage: "backend_validate_base64",
+      fn: "validateAndDecodeAttachment",
+      fileKind: declared === "application/pdf" ? "document" : "image",
+      mimeType: declared,
+      sizeBytes: 0,
+      httpStatus: 400,
+      errorCode: "EMPTY_FILE",
+      summary: "Attachment missing both data and uri."
+    });
+    throw new AttachmentValidationError("\u0627\u0644\u0645\u0644\u0641 \u0627\u0644\u0645\u0631\u0641\u0642 \u0641\u0627\u0631\u063A \u0623\u0648 \u062A\u0627\u0644\u0641. \u064A\u0631\u062C\u0649 \u0627\u062E\u062A\u064A\u0627\u0631 \u0627\u0644\u0645\u0644\u0641 \u0645\u0631\u0629 \u0623\u062E\u0631\u0649.", {
+      status: 400,
+      errorCode: "EMPTY_FILE",
+      stage: "backend_validate_base64"
+    });
+  }
+  let cleanBase64 = attachment.data.trim();
+  const dataUrlMatch = cleanBase64.match(/^data:([^;]+);base64,(.*)$/s);
+  if (dataUrlMatch) {
+    cleanBase64 = dataUrlMatch[2].trim();
+  }
+  cleanBase64 = cleanBase64.replace(/\s+/g, "");
+  if (!cleanBase64 || !/^[A-Za-z0-9+/]+={0,2}$/.test(cleanBase64)) {
+    logAttachmentStage({
+      stage: "backend_validate_base64",
+      fn: "validateAndDecodeAttachment",
+      fileKind: declared === "application/pdf" ? "document" : "image",
+      mimeType: declared,
+      sizeBytes: cleanBase64.length,
+      httpStatus: 400,
+      errorCode: "CORRUPTED_FILE",
+      summary: "Invalid base64 encoding in attachment payload."
+    });
+    throw new AttachmentValidationError("\u0628\u064A\u0627\u0646\u0627\u062A \u0627\u0644\u0645\u0631\u0641\u0642 \u062A\u0627\u0644\u0641\u0629 \u0623\u0648 \u063A\u064A\u0631 \u0645\u0643\u062A\u0645\u0644\u0629. \u064A\u0631\u062C\u0649 \u0625\u0639\u0627\u062F\u0629 \u0627\u062E\u062A\u064A\u0627\u0631 \u0627\u0644\u0645\u0644\u0641.", {
+      status: 400,
+      errorCode: "CORRUPTED_FILE",
+      stage: "backend_validate_base64"
+    });
+  }
+  const buffer = Buffer.from(cleanBase64, "base64");
+  const validated = validateBinaryBufferAttachment(buffer, {
+    declaredMime: declared,
+    name,
+    maxBytes: MAX_INLINE_RAW_BYTES,
+    fn: "validateAndDecodeAttachment"
+  });
+  logAttachmentStage({
+    stage: "backend_validated",
+    fn: "validateAndDecodeAttachment",
+    fileKind: validated.kind,
+    mimeType: validated.mimeType,
+    sizeBytes: validated.sizeBytes,
+    pageCount: validated.pageCount,
+    transport: "inline_base64"
+  });
+  return {
+    ...validated,
+    base64: cleanBase64
+  };
+}
+function buildInteractionAttachmentPart(validated) {
+  if (!validated) return null;
+  if (validated.uri) {
+    return {
+      type: validated.kind,
+      uri: validated.uri,
+      mime_type: validated.mimeType
+    };
+  }
+  if (!validated.base64) {
+    throw new AttachmentValidationError("\u062A\u0639\u0630\u0631 \u062A\u062C\u0647\u064A\u0632 \u0628\u064A\u0627\u0646\u0627\u062A \u0627\u0644\u0645\u0631\u0641\u0642 \u0644\u0644\u0625\u0631\u0633\u0627\u0644.", {
+      status: 400,
+      errorCode: "CORRUPTED_FILE",
+      stage: "build_interaction_part"
+    });
+  }
+  return {
+    type: validated.kind,
+    data: validated.base64,
+    mime_type: validated.mimeType
+  };
+}
+async function uploadAttachmentToGeminiFiles(ai, validated) {
+  if (!ai.files?.upload) {
+    throw new AttachmentValidationError("\u062E\u062F\u0645\u0629 \u0631\u0641\u0639 \u0627\u0644\u0645\u0644\u0641\u0627\u062A \u0627\u0644\u0645\u0624\u0642\u062A\u0629 \u063A\u064A\u0631 \u0645\u062A\u0627\u062D\u0629 \u062D\u0627\u0644\u064A\u064B\u0627.", {
+      status: 502,
+      errorCode: "UPLOAD_FAILED",
+      stage: "gemini_files_upload",
+      retryable: true
+    });
+  }
+  if (!validated.buffer) {
+    throw new AttachmentValidationError("\u0628\u064A\u0627\u0646\u0627\u062A \u0627\u0644\u0645\u0644\u0641 \u063A\u064A\u0631 \u0635\u0627\u0644\u062D\u0629 \u0644\u0644\u0631\u0641\u0639.", {
+      status: 400,
+      errorCode: "EMPTY_FILE",
+      stage: "gemini_files_upload"
+    });
+  }
+  const blob = new Blob([new Uint8Array(validated.buffer)], { type: validated.mimeType });
+  const safeDisplayName = validated.name.replace(/[^\w.\-()\s\u0600-\u06FF]/g, "_").slice(0, 80) || "physics-attachment";
+  let uploaded = await ai.files.upload({
+    file: blob,
+    config: {
+      mimeType: validated.mimeType,
+      displayName: safeDisplayName
+    }
+  });
+  if (uploaded?.name && uploaded?.state === "PROCESSING" && ai.files.get) {
+    for (let i = 0; i < 6; i++) {
+      await new Promise((r) => setTimeout(r, 700));
+      const checked = await ai.files.get({ name: uploaded.name });
+      uploaded = checked;
+      if (checked?.state !== "PROCESSING") break;
+    }
+  }
+  if (uploaded?.state === "FAILED" || !uploaded?.uri) {
+    throw new AttachmentValidationError("\u062A\u0639\u0630\u0631 \u062A\u062C\u0647\u064A\u0632 \u0627\u0644\u0645\u0644\u0641 \u0639\u0644\u0649 \u062E\u0627\u062F\u0645 Gemini Files API. \u064A\u0631\u062C\u0649 \u0627\u0644\u0645\u062D\u0627\u0648\u0644\u0629 \u0645\u0631\u0629 \u0623\u062E\u0631\u0649.", {
+      status: 502,
+      errorCode: "UPLOAD_FAILED",
+      stage: "gemini_files_upload",
+      retryable: true
+    });
+  }
+  logAttachmentStage({
+    stage: "gemini_files_uploaded",
+    fn: "uploadAttachmentToGeminiFiles",
+    fileKind: validated.kind,
+    mimeType: validated.mimeType,
+    sizeBytes: validated.sizeBytes,
+    pageCount: validated.pageCount,
+    transport: "files_api_uri",
+    httpStatus: 200
+  });
+  return {
+    uri: String(uploaded.uri),
+    fileName: String(uploaded.name || ""),
+    mimeType: validated.mimeType,
+    expiresAt: uploaded.expirationTime ? String(uploaded.expirationTime) : void 0
+  };
+}
+async function deleteGeminiFileSafe(ai, fileName) {
+  if (!fileName || !ai.files?.delete) return false;
+  const cleaned = String(fileName).trim();
+  if (!/^files\/[A-Za-z0-9_-]+$/.test(cleaned)) return false;
+  try {
+    await ai.files.delete({ name: cleaned });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // server.ts
 dotenv.config();
 var __filename = fileURLToPath(import.meta.url);
@@ -1099,7 +1525,8 @@ Track: ${trackLabel} | Grade: ${opts.grade || "General"} | Level: ${opts.level} 
 ${languageInstruction}
 ${modeInstructions}
 ${detailInstruction}
-RULES: Verify laws, constants (state assumptions like g=9.8 or 10 m/s^2), and SI units; distinguish exact vs rounded results; ask for missing values if ambiguous; maintain conversation continuity; wrap display equations in $$...$$ and inline formulas in $...$.`;
+RULES: Verify laws, constants (state assumptions like g=9.8 or 10 m/s^2), and SI units; distinguish exact vs rounded results; ask for missing values if ambiguous; maintain conversation continuity; wrap display equations in $$...$$ and inline formulas in $...$.
+ATTACHMENTS: When an image or PDF is attached, carefully read all equations, graphs, diagrams, tables, and multi-page content in page order, cite page numbers when answering about a PDF, and if any part is blurry or unreadable NEVER guess\u2014tell the student clearly which part is unclear.`;
   if (systemInstructionCache.size >= SYSTEM_INSTRUCTION_CACHE_MAX) {
     const oldestKey = systemInstructionCache.keys().next().value;
     if (oldestKey) systemInstructionCache.delete(oldestKey);
@@ -1108,13 +1535,8 @@ RULES: Verify laws, constants (state assumptions like g=9.8 or 10 m/s^2), and SI
   return template;
 }
 function buildAttachmentPart(attachment) {
-  if (!attachment?.data || !attachment?.mimeType) return null;
-  const isImage = attachment.mimeType.toLowerCase().startsWith("image/");
-  return {
-    type: isImage ? "image" : "document",
-    data: attachment.data,
-    mime_type: attachment.mimeType
-  };
+  const validated = validateAndDecodeAttachment(attachment);
+  return buildInteractionAttachmentPart(validated);
 }
 function formatCompactHistory(history) {
   if (!Array.isArray(history) || history.length === 0) return "";
@@ -1135,12 +1557,27 @@ function inferErrorSource(err) {
   if (err.errorCode === "PERMISSION_DENIED") {
     return "gemini_permissions";
   }
+  if (err.errorCode === "ATTACHMENT_REJECTED") {
+    return "gemini_api";
+  }
   if (err.errorCode === "BAD_REQUEST" || err.errorCode === "INTERNAL_ERROR") {
     return "backend";
   }
   return "gemini_api";
 }
 function buildErrorPayload(err, fallbackMessage) {
+  if (err instanceof AttachmentValidationError) {
+    return {
+      status: err.status,
+      body: {
+        error: err.message,
+        errorCode: err.errorCode,
+        retryable: err.retryable,
+        source: "backend_validation",
+        stage: err.stage
+      }
+    };
+  }
   if (err instanceof GeminiResilienceError) {
     const source = inferErrorSource(err);
     return {
@@ -1166,14 +1603,17 @@ function buildErrorPayload(err, fallbackMessage) {
       }
     };
   }
-  const safeMsg = sanitizeSecret(err?.message || fallbackMessage);
+  const status = typeof err?.status === "number" && err.status >= 100 && err.status < 600 ? err.status : 500;
+  const errorCode = err?.errorCode || (status === 413 ? "FILE_TOO_LARGE" : status === 400 ? "BAD_REQUEST" : "INTERNAL_ERROR");
+  const errorMsg = err?.message || fallbackMessage;
+  const safeMsg = sanitizeSecret(errorMsg);
   return {
-    status: 500,
+    status,
     body: {
-      error: fallbackMessage,
-      errorCode: "INTERNAL_ERROR",
-      retryable: true,
-      source: "backend",
+      error: errorMsg,
+      errorCode,
+      retryable: status !== 400 && status !== 413 && status !== 422 && status !== 401 && status !== 403,
+      source: status === 400 || status === 413 || status === 422 ? "backend_validation" : "backend",
       detail: process.env.NODE_ENV === "production" ? void 0 : safeMsg
     }
   };
@@ -1332,6 +1772,84 @@ app.post("/api/math/verify", (req, res) => {
     res.json({ result: numericResult, isMatch });
   } catch (err) {
     res.status(400).json({ error: err?.message || "Math evaluation error" });
+  }
+});
+app.post(
+  "/api/ai/files/upload",
+  express.raw({
+    type: ["application/pdf", "image/jpeg", "image/png", "image/webp", "application/octet-stream"],
+    limit: "4.3mb"
+  }),
+  async (req, res) => {
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    const declaredMime = String(req.headers["x-file-mime"] || req.headers["content-type"] || "");
+    const rawName = String(req.headers["x-file-name"] || "attachment");
+    let fileNameDecoded = rawName;
+    try {
+      fileNameDecoded = decodeURIComponent(rawName);
+    } catch {
+    }
+    try {
+      const buffer = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+      const validated = validateBinaryBufferAttachment(buffer, {
+        declaredMime,
+        name: fileNameDecoded,
+        fn: "POST /api/ai/files/upload"
+      });
+      const clientFactory = app.locals?.geminiClientFactory;
+      const ai = clientFactory ? clientFactory() : createGeminiClient();
+      const uploaded = await uploadAttachmentToGeminiFiles(ai, validated);
+      res.status(200).json({
+        ok: true,
+        uri: uploaded.uri,
+        fileName: uploaded.fileName,
+        mimeType: uploaded.mimeType,
+        sizeBytes: validated.sizeBytes,
+        pageCount: validated.pageCount ?? null,
+        expiresAt: uploaded.expiresAt ?? null
+      });
+    } catch (err) {
+      if (err instanceof AttachmentValidationError) {
+        const { status, body } = buildErrorPayload(err, err.message);
+        res.status(status).json(body);
+        return;
+      }
+      const classified = classifyGeminiError(err);
+      logAttachmentStage({
+        stage: "gemini_files_upload_error",
+        fn: "POST /api/ai/files/upload",
+        fileKind: declaredMime.includes("pdf") ? "document" : "image",
+        mimeType: declaredMime,
+        sizeBytes: Buffer.isBuffer(req.body) ? req.body.length : 0,
+        transport: "binary_upload",
+        httpStatus: classified.httpStatus,
+        errorCode: classified.category === "auth_error" ? "AUTH_ERROR" : classified.category === "permission_denied" ? "PERMISSION_DENIED" : "UPLOAD_FAILED",
+        summary: classified.rawSummary
+      });
+      const isAuth = classified.category === "auth_error" || classified.category === "permission_denied";
+      res.status(isAuth ? classified.httpStatus : 502).json({
+        error: isAuth ? classified.safeMessage : "\u062A\u0639\u0630\u0631 \u0631\u0641\u0639 \u0627\u0644\u0645\u0644\u0641 \u0625\u0644\u0649 \u062E\u0627\u062F\u0645 Gemini \u0627\u0644\u0645\u0624\u0642\u062A \u062D\u0627\u0644\u064A\u064B\u0627. \u064A\u0645\u0643\u0646\u0643 \u0627\u0644\u0645\u062D\u0627\u0648\u0644\u0629 \u0645\u0631\u0629 \u0623\u062E\u0631\u0649.",
+        errorCode: classified.category === "auth_error" ? "AUTH_ERROR" : classified.category === "permission_denied" ? "PERMISSION_DENIED" : "UPLOAD_FAILED",
+        retryable: !isAuth,
+        source: isAuth ? "gemini_auth" : "gemini_api"
+      });
+    }
+  }
+);
+app.delete("/api/ai/files", async (req, res) => {
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  const fileName = String(req.body?.fileName || req.query?.fileName || "").trim();
+  if (!fileName) {
+    res.status(400).json({ ok: false, errorCode: "BAD_REQUEST", error: "fileName is required." });
+    return;
+  }
+  try {
+    const clientFactory = app.locals?.geminiClientFactory;
+    const ai = clientFactory ? clientFactory() : createGeminiClient();
+    const deleted = await deleteGeminiFileSafe(ai, fileName);
+    res.json({ ok: deleted });
+  } catch {
+    res.json({ ok: false });
   }
 });
 app.post("/api/ai/tutor", async (req, res) => {

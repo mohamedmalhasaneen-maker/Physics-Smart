@@ -3,6 +3,12 @@ import { Language, StudyLanguage, UserProfile } from '../types/physics';
 import { LatexBlock, RichPhysicsText } from './MathRenderer';
 import { StudyLanguageSwitcher } from './BilingualBlock';
 import {
+  ClientAttachmentError,
+  PreparedAttachment,
+  cleanupUploadedAttachment,
+  prepareAttachmentFile,
+} from '../lib/attachmentUtils';
+import {
   Camera,
   CheckCircle2,
   FileUp,
@@ -51,7 +57,8 @@ export function SolverView({ lang, studyLang, profile }: SolverViewProps) {
     { symbol: 't', value: '5', unit: 's' },
   ]);
   const [manualTarget, setManualTarget] = useState('d (displacement)');
-  const [attachment, setAttachment] = useState<{ name: string; mimeType: string; data: string } | null>(null);
+  const [attachment, setAttachment] = useState<PreparedAttachment | null>(null);
+  const [attachmentPreparing, setAttachmentPreparing] = useState(false);
 
   const [cameraActive, setCameraActive] = useState(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -106,28 +113,49 @@ export function SolverView({ lang, studyLang, profile }: SolverViewProps) {
     if (!ctx) return;
     ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
     const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
-    setAttachment({ name: 'camera-capture.jpg', mimeType: 'image/jpeg', data: dataUrl.split(',')[1] });
+    const base64 = dataUrl.split(',')[1] || '';
+    if (attachment?.fileName) cleanupUploadedAttachment(attachment.fileName);
+    setAttachment({
+      name: 'camera-capture.jpg',
+      mimeType: 'image/jpeg',
+      data: base64,
+      sizeBytes: Math.floor((base64.length * 3) / 4),
+    });
     stopCamera();
   };
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    e.target.value = '';
     if (!file) return;
-    if (file.size > 8 * 1024 * 1024) {
-      setErrorMsg(lang === 'ar' ? 'الحد الأقصى 8 ميجابايت.' : 'Max file size is 8 MB.');
-      return;
+
+    if (attachment?.fileName) {
+      cleanupUploadedAttachment(attachment.fileName);
     }
-    const reader = new FileReader();
-    reader.onload = () => {
-      const str = reader.result as string;
-      setAttachment({ name: file.name, mimeType: file.type || 'image/png', data: str.split(',')[1] || '' });
-      setErrorMsg('');
-    };
-    reader.readAsDataURL(file);
+
+    setErrorMsg('');
+    setAttachmentPreparing(true);
+    try {
+      const prepared = await prepareAttachmentFile(file, lang, { useFilesApiForPdf: true });
+      setAttachment(prepared);
+    } catch (err: any) {
+      setAttachment(null);
+      if (err instanceof ClientAttachmentError) {
+        setErrorMsg(err.message);
+      } else {
+        setErrorMsg(
+          lang === 'ar'
+            ? 'تعذر قراءة الملف المرفق. يرجى اختيار صورة (JPG, PNG, WEBP) أو ملف PDF صالح.'
+            : 'Failed to read attachment. Please upload a valid JPG, PNG, WEBP, or PDF.'
+        );
+      }
+    } finally {
+      setAttachmentPreparing(false);
+    }
   };
 
   const handleSolve = async () => {
-    if (solveInFlightRef.current || loading) return;
+    if (solveInFlightRef.current || loading || attachmentPreparing) return;
     solveInFlightRef.current = true;
     setLoading(true);
     setErrorMsg('');
@@ -143,7 +171,17 @@ export function SolverView({ lang, studyLang, profile }: SolverViewProps) {
           manualTarget: inputMode === 'manual' ? manualTarget : '',
           language: outputLang,
           track: profile.track,
-          attachment: attachment ? { mimeType: attachment.mimeType, data: attachment.data } : undefined,
+          attachment: attachment
+            ? {
+                mimeType: attachment.mimeType,
+                data: attachment.data,
+                uri: attachment.uri,
+                fileName: attachment.fileName,
+                name: attachment.name,
+                pageCount: attachment.pageCount,
+                sizeBytes: attachment.sizeBytes,
+              }
+            : undefined,
         }),
       });
       const contentType = res.headers.get('content-type') || '';
@@ -158,8 +196,13 @@ export function SolverView({ lang, studyLang, profile }: SolverViewProps) {
       }
       if (!res.ok) {
         const isTraffic = res.status === 503 || res.status === 429 || data.errorCode === 'HIGH_DEMAND';
+        const isTooLarge = res.status === 413 || data.errorCode === 'FILE_TOO_LARGE';
         throw new Error(
-          isTraffic
+          isTooLarge
+            ? lang === 'ar'
+              ? 'حجم المرفق يتجاوز الحد المسموح على الخادم (4.2 ميجابايت لملفات PDF).'
+              : 'Attachment exceeds server size limit (4.2 MB for PDFs).'
+            : isTraffic
             ? lang === 'ar'
               ? 'النظام يواجه ضغطًا مؤقتًا حاليًا. مسألتك محفوظة، يرجى الضغط على حل مرة أخرى بعد لحظات.'
               : 'Service is experiencing temporary high traffic. Your problem is saved — please try again shortly.'
@@ -291,7 +334,13 @@ export function SolverView({ lang, studyLang, profile }: SolverViewProps) {
                   ? 'اضغط لرفع صورة مسألة، رسم بياني، دائرة كهربية، أو ملف PDF'
                   : 'Click to upload problem photo, graph, circuit diagram, or PDF'}
               </span>
-              <input type="file" accept="image/*,application/pdf" onChange={handleFileUpload} className="hidden" />
+              <input
+                type="file"
+                accept=".jpg,.jpeg,.png,.webp,.pdf,image/jpeg,image/png,image/webp,application/pdf"
+                onChange={handleFileUpload}
+                disabled={loading || attachmentPreparing}
+                className="hidden"
+              />
             </label>
             <input
               type="text"
@@ -392,10 +441,28 @@ export function SolverView({ lang, studyLang, profile }: SolverViewProps) {
           </div>
         )}
 
-        {attachment && (
+        {attachmentPreparing && (
+          <div className="flex items-center gap-2 text-xs bg-blue-500/10 border border-blue-500/20 text-blue-600 dark:text-cyan-300 px-3 py-2 rounded-xl">
+            <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+            <span>
+              {lang === 'ar' ? 'جارٍ فحص وتجهيز المرفق...' : 'Checking and preparing attachment...'}
+            </span>
+          </div>
+        )}
+
+        {attachment && !attachmentPreparing && (
           <div className="flex items-center justify-between text-xs bg-blue-500/10 border border-blue-500/20 text-blue-600 dark:text-cyan-300 px-3 py-2 rounded-xl">
-            <span>📎 {attachment.name}</span>
-            <button onClick={() => setAttachment(null)} className="hover:underline">
+            <span className="truncate">
+              📎 {attachment.name}
+              {attachment.pageCount ? ` (${attachment.pageCount} ${lang === 'ar' ? 'صفحة' : 'pages'})` : ''}
+            </span>
+            <button
+              onClick={() => {
+                cleanupUploadedAttachment(attachment.fileName);
+                setAttachment(null);
+              }}
+              className="hover:underline shrink-0 ms-2"
+            >
               {lang === 'ar' ? 'إزالة' : 'Remove'}
             </button>
           </div>
@@ -407,7 +474,7 @@ export function SolverView({ lang, studyLang, profile }: SolverViewProps) {
 
         <button
           onClick={handleSolve}
-          disabled={loading}
+          disabled={loading || attachmentPreparing}
           className="px-6 py-3 rounded-xl glass-btn-primary text-sm font-semibold flex items-center gap-2 disabled:opacity-60"
         >
           {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}

@@ -8,6 +8,12 @@ import {
   UserProfile,
 } from '../types/physics';
 import { pickStudyText } from '../lib/bilingual';
+import {
+  ClientAttachmentError,
+  PreparedAttachment,
+  cleanupUploadedAttachment,
+  prepareAttachmentFile,
+} from '../lib/attachmentUtils';
 import { RichPhysicsText } from './MathRenderer';
 import {
   Bot,
@@ -60,7 +66,8 @@ export function TutorView({
   const [messages, setMessages] = useState<TutorMessage[]>([]);
   const [streamingText, setStreamingText] = useState('');
   const [inputText, setInputText] = useState('');
-  const [attachment, setAttachment] = useState<{ name: string; mimeType: string; data: string } | null>(null);
+  const [attachment, setAttachment] = useState<PreparedAttachment | null>(null);
+  const [attachmentPreparing, setAttachmentPreparing] = useState(false);
   const [loading, setLoading] = useState(false);
   const [slowWait, setSlowWait] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
@@ -72,21 +79,35 @@ export function TutorView({
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
   }, [messages.length, streamingText]);
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    // Reset input value so re-selecting the same file always triggers onChange
+    e.target.value = '';
     if (!file) return;
-    if (file.size > 6 * 1024 * 1024) {
-      setErrorMsg(lang === 'ar' ? 'الحد الأقصى لحجم الملف 6 ميجابايت.' : 'Maximum file size is 6 MB.');
-      return;
+
+    if (attachment?.fileName) {
+      cleanupUploadedAttachment(attachment.fileName);
     }
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = reader.result as string;
-      const base64 = result.split(',')[1] || '';
-      setAttachment({ name: file.name, mimeType: file.type || 'image/png', data: base64 });
-      setErrorMsg('');
-    };
-    reader.readAsDataURL(file);
+
+    setErrorMsg('');
+    setAttachmentPreparing(true);
+    try {
+      const prepared = await prepareAttachmentFile(file, lang, { useFilesApiForPdf: true });
+      setAttachment(prepared);
+    } catch (err: any) {
+      setAttachment(null);
+      if (err instanceof ClientAttachmentError) {
+        setErrorMsg(err.message);
+      } else {
+        setErrorMsg(
+          lang === 'ar'
+            ? 'تعذر قراءة الملف المرفق. يرجى اختيار صورة (JPG, PNG, WEBP) أو ملف PDF سليم.'
+            : 'Failed to read attachment. Please choose a valid JPG, PNG, WEBP, or PDF file.'
+        );
+      }
+    } finally {
+      setAttachmentPreparing(false);
+    }
   };
 
   const compactLessonContext = useMemo(() => {
@@ -133,6 +154,46 @@ export function TutorView({
       return lang === 'ar'
         ? `مفتاح Gemini API غير صالح أو مرفوض من Google (${errorCode || 401}). يرجى إنشاء مفتاح جديد من Google AI Studio وتحديث GEMINI_API_KEY في Vercel.`
         : `Gemini API key is invalid or rejected (401). Generate a valid key in Google AI Studio and update GEMINI_API_KEY in Vercel.`;
+    }
+    if (errorCode === 'UNSUPPORTED_FILE_TYPE' || (status === 400 && lower.includes('غير مدعوم'))) {
+      return lang === 'ar'
+        ? 'نوع المرفق غير مدعوم. يرجى رفع صورة (JPG, JPEG, PNG, WEBP) أو ملف PDF فقط.'
+        : 'Unsupported file type. Please upload an image (JPG, JPEG, PNG, WEBP) or PDF.';
+    }
+    if (errorCode === 'PDF_ENCRYPTED') {
+      return lang === 'ar'
+        ? 'ملف الـ PDF محمي بكلمة مرور أو مشفّر. يرجى إزالة كلمة المرور وحفظه مجددًا ثم رفعه.'
+        : 'This PDF is password-protected or encrypted. Please remove the password and upload again.';
+    }
+    if (errorCode === 'PDF_TOO_MANY_PAGES') {
+      return lang === 'ar'
+        ? 'عدد صفحات ملف PDF يتجاوز الحد المسموح (50 صفحة).'
+        : 'PDF page count exceeds the 50-page limit.';
+    }
+    if (errorCode === 'CORRUPTED_FILE') {
+      return lang === 'ar'
+        ? 'الملف المرفق تالف أو غير مكتمل. يرجى التأكد من سلامة الملف وإعادة اختياره.'
+        : 'Attachment appears corrupted or unreadable. Please select a valid file.';
+    }
+    if (errorCode === 'INVALID_FILE_URI' || errorCode === 'UPLOAD_FAILED') {
+      return lang === 'ar'
+        ? 'تعذر رفع أو قراءة مرجع الملف على الخادم المؤقت. يرجى إزالة المرفق وإعادة رفعه.'
+        : 'Could not upload or access the temporary file reference. Please re-attach the file.';
+    }
+    if (errorCode === 'ATTACHMENT_REJECTED') {
+      return lang === 'ar'
+        ? 'لم يتمكن نموذج الذكاء الاصطناعي من معالجة هذا المرفق. تأكد أن الصورة واضحة أو أن ملف PDF غير تالف.'
+        : 'The AI model could not read this attachment. Ensure the image or PDF is valid and readable.';
+    }
+    if (errorCode === 'FILE_TOO_LARGE' || status === 413 || lower.includes('حجم المرفق أكبر')) {
+      return lang === 'ar'
+        ? 'حجم المرفق يتجاوز الحد المسموح على الخادم (4.2 ميجابايت لملفات PDF). يرجى ضغط الملف أو تقليل حجمه.'
+        : 'Attachment exceeds the server size limit (4.2 MB for PDFs). Please compress the file.';
+    }
+    if (errorCode === 'EMPTY_FILE' || lower.includes('فارغ')) {
+      return lang === 'ar'
+        ? 'المرفق فارغ (0 بايت). يرجى اختيار ملف صالح.'
+        : 'Attachment is empty (0 bytes). Please choose a valid file.';
     }
     if (status === 404 || errorCode === 'NOT_FOUND' || lower.includes('the page could not be found')) {
       return lang === 'ar'
@@ -185,7 +246,7 @@ export function TutorView({
 
   const sendMessage = async (e?: React.FormEvent, customText?: string) => {
     e?.preventDefault();
-    if (inFlightRef.current || loading) return;
+    if (inFlightRef.current || loading || attachmentPreparing) return;
 
     const rawTrimmed = customText !== undefined ? customText.trim() : inputText.trim();
     const hasAttachment = Boolean(attachment);
@@ -248,7 +309,15 @@ export function TutorView({
           })),
           previousInteractionId: lastInteractionId || undefined,
           attachment: savedAttachment
-            ? { mimeType: savedAttachment.mimeType, data: savedAttachment.data }
+            ? {
+                mimeType: savedAttachment.mimeType,
+                data: savedAttachment.data,
+                uri: savedAttachment.uri,
+                fileName: savedAttachment.fileName,
+                name: savedAttachment.name,
+                pageCount: savedAttachment.pageCount,
+                sizeBytes: savedAttachment.sizeBytes,
+              }
             : undefined,
         }),
       });
@@ -356,7 +425,7 @@ export function TutorView({
         const text = await res.text();
         throw {
           status: res.status || 502,
-          errorCode: res.status === 404 ? 'NOT_FOUND' : 'NON_JSON_RESPONSE',
+          errorCode: res.status === 413 ? 'FILE_TOO_LARGE' : res.status === 404 ? 'NOT_FOUND' : 'NON_JSON_RESPONSE',
           contentType,
           message: text.slice(0, 160) || 'NON_JSON_RESPONSE',
         };
@@ -433,6 +502,9 @@ export function TutorView({
   };
 
   const startNewChat = () => {
+    if (attachment?.fileName) {
+      cleanupUploadedAttachment(attachment.fileName);
+    }
     setActiveSessionId(`session-${Date.now()}`);
     setStreamingText('');
     setMessages([]);
@@ -730,10 +802,30 @@ export function TutorView({
         )}
 
         <form onSubmit={sendMessage} className="p-4 border-t border-slate-200/70 dark:border-white/10 space-y-2.5">
-          {attachment && (
+          {attachmentPreparing && (
+            <div className="flex items-center gap-2 text-xs bg-blue-500/10 border border-blue-500/20 text-blue-600 dark:text-cyan-300 px-3 py-1.5 rounded-xl">
+              <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+              <span>
+                {lang === 'ar'
+                  ? 'جارٍ فحص وتجهيز المرفق للإرسال...'
+                  : 'Checking and preparing attachment...'}
+              </span>
+            </div>
+          )}
+          {attachment && !attachmentPreparing && (
             <div className="flex items-center justify-between text-xs bg-blue-500/10 border border-blue-500/20 text-blue-600 dark:text-cyan-300 px-3 py-1.5 rounded-xl">
-              <span>📎 {attachment.name}</span>
-              <button type="button" onClick={() => setAttachment(null)} className="hover:underline">
+              <span className="truncate">
+                📎 {attachment.name}
+                {attachment.pageCount ? ` (${attachment.pageCount} ${lang === 'ar' ? 'صفحة' : 'pages'})` : ''}
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  cleanupUploadedAttachment(attachment.fileName);
+                  setAttachment(null);
+                }}
+                className="hover:underline shrink-0 ms-2"
+              >
                 {lang === 'ar' ? 'إزالة' : 'Remove'}
               </button>
             </div>
@@ -743,8 +835,9 @@ export function TutorView({
               <FileUp className="w-4 h-4" />
               <input
                 type="file"
-                accept="image/*,application/pdf"
+                accept=".jpg,.jpeg,.png,.webp,.pdf,image/jpeg,image/png,image/webp,application/pdf"
                 onChange={handleFileChange}
+                disabled={loading || attachmentPreparing}
                 className="hidden"
               />
             </label>
@@ -771,7 +864,7 @@ export function TutorView({
             />
             <button
               type="submit"
-              disabled={loading || (!inputText.trim() && !attachment)}
+              disabled={loading || attachmentPreparing || (!inputText.trim() && !attachment)}
               className="p-3 rounded-xl glass-btn-primary disabled:opacity-50 shrink-0"
             >
               <Send className="w-4 h-4" />

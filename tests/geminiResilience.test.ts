@@ -551,7 +551,78 @@ async function runTests() {
     console.log('✓ Test 12 passed: /api/ai/auth-check requires auth in production and executes safely when authorized');
   }
 
-  console.log('\nALL 13 RESILIENCE, AUTH & STREAMING TESTS PASSED SUCCESSFULLY!');
+  // Test 13: Real Attachment validation + Interactions API formatting (ImageContent / DocumentContent)
+  {
+    const {
+      AttachmentValidationError,
+      buildInteractionAttachmentPart,
+      validateAndDecodeAttachment,
+    } = await import('../server/attachmentHandler.ts');
+
+    // Real minimal PNG header + payload
+    const validPng = Buffer.from([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+      0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+    ]);
+    const validJpg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46]);
+    const validPdf = Buffer.from('%PDF-1.4\n1 0 obj\n<< /Type /Page >>\nendobj\n%%EOF', 'latin1');
+
+    const partJpg = buildInteractionAttachmentPart(
+      validateAndDecodeAttachment({ mimeType: 'image/jpg', data: validJpg.toString('base64') })
+    );
+    assert.deepEqual(partJpg, {
+      type: 'image',
+      mime_type: 'image/jpeg',
+      data: validJpg.toString('base64'),
+    });
+
+    const partPng = buildInteractionAttachmentPart(
+      validateAndDecodeAttachment({ mimeType: 'image/png', data: validPng.toString('base64') })
+    );
+    assert.deepEqual(partPng, {
+      type: 'image',
+      mime_type: 'image/png',
+      data: validPng.toString('base64'),
+    });
+
+    const partPdf = buildInteractionAttachmentPart(
+      validateAndDecodeAttachment({ mimeType: 'application/pdf', data: validPdf.toString('base64') })
+    );
+    assert.deepEqual(partPdf, {
+      type: 'document',
+      mime_type: 'application/pdf',
+      data: validPdf.toString('base64'),
+    });
+
+    // Unsupported file type (fake EXE bytes)
+    let caught: any = null;
+    try {
+      validateAndDecodeAttachment({
+        mimeType: 'application/x-msdownload',
+        data: Buffer.from('MZfakeExecutable').toString('base64'),
+      });
+    } catch (e) {
+      caught = e;
+    }
+    assert.ok(caught instanceof AttachmentValidationError);
+    assert.equal(caught?.errorCode, 'UNSUPPORTED_FILE_TYPE');
+    assert.equal(caught?.status, 400);
+
+    // Oversized file (> 3 MB raw inside inline JSON)
+    try {
+      const bigBuf = Buffer.concat([validPng, Buffer.alloc(3.2 * 1024 * 1024)]);
+      validateAndDecodeAttachment({ mimeType: 'image/png', data: bigBuf.toString('base64') });
+    } catch (e) {
+      caught = e;
+    }
+    assert.ok(caught instanceof AttachmentValidationError);
+    assert.equal(caught?.errorCode, 'FILE_TOO_LARGE');
+    assert.equal(caught?.status, 413);
+
+    console.log('✓ Test 13 passed: Real attachment magic-byte validation & v1beta ImageContent/DocumentContent formatting');
+  }
+
+  console.log('\nALL 14 RESILIENCE, AUTH, STREAMING & ATTACHMENT TESTS PASSED SUCCESSFULLY!');
 }
 
 runTests().catch((err) => {
