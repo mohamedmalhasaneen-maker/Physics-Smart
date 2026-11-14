@@ -123,16 +123,27 @@ export function sanitizeSecret(text: string): string {
     .replace(/(key|apiKey|api_key|token|authorization)\s*[:=]\s*['"]?[A-Za-z0-9._-]{12,}['"]?/gi, '$1=[REDACTED]');
 }
 
+export function getConfiguredGeminiKey(): { apiKey: string | null; envVarName: string | null } {
+  const candidates = ['GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_GENERATIVE_AI_API_KEY'] as const;
+  for (const name of candidates) {
+    const val = process.env[name];
+    if (typeof val === 'string' && val.trim().length > 0) {
+      return { apiKey: val.trim(), envVarName: name };
+    }
+  }
+  return { apiKey: null, envVarName: null };
+}
+
 export function createGeminiClient(): GeminiClientLike {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey || !apiKey.trim()) {
+  const { apiKey } = getConfiguredGeminiKey();
+  if (!apiKey) {
     const err: any = new Error('GEMINI_API_KEY is not configured in environment.');
     err.status = 401;
     err.code = 'API_KEY_MISSING';
     throw err;
   }
   return new GoogleGenAI({
-    apiKey: apiKey.trim(),
+    apiKey,
     httpOptions: {
       headers: {
         'User-Agent': 'physics-smart-aistudio',
@@ -149,6 +160,8 @@ function extractHttpStatus(err: any): number {
     err?.data$?.error?.code,
     err?.error?.code,
     err?.response?.status,
+    err?.response?.data?.error?.code,
+    err?.body?.error?.code,
     err?.cause?.status,
   ];
   for (const val of candidates) {
@@ -156,7 +169,7 @@ function extractHttpStatus(err: any): number {
       return val;
     }
   }
-  const msg = String(err?.message || err?.data$?.error?.message || '');
+  const msg = String(err?.message || err?.data$?.error?.message || err?.cause?.message || '');
   const match = msg.match(/\b(400|401|403|404|408|422|429|500|502|503|504)\b/);
   if (match) return Number(match[1]);
   return 0;
@@ -165,11 +178,15 @@ function extractHttpStatus(err: any): number {
 function extractRawErrorMessage(err: any): string {
   const parts = [
     err?.data$?.error?.message,
+    err?.response?.data?.error?.message,
+    err?.body?.error?.message,
     err?.error?.message,
     err?.message,
+    err?.cause?.message,
     err?.data$?.error?.status,
     err?.statusText,
     err?.code,
+    err?.cause?.code,
     err?.name,
   ].filter((x) => typeof x === 'string' && x.trim().length > 0);
   return sanitizeSecret(parts.join(' | ') || String(err || 'Unknown error'));

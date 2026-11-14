@@ -99,7 +99,12 @@ export function TutorView({
     return `Lesson: ${lesson.titleAr} (${lesson.titleEn})${laws ? `\nKey Laws: ${laws}` : ''}`.slice(0, 900);
   }, [scopedLessons, groundedLessonId]);
 
-  const toFriendlyTutorError = (rawErr: any, status?: number, errorCode?: string): string => {
+  const toFriendlyTutorError = (
+    rawErr: any,
+    status?: number,
+    errorCode?: string,
+    source?: string
+  ): string => {
     if (typeof navigator !== 'undefined' && !navigator.onLine) {
       return lang === 'ar'
         ? 'يبدو أن الاتصال بالإنترنت مقطوع حاليًا. تأكد من اتصالك بالشبكة ثم اضغط إعادة المحاولة، سؤالك ما زال محفوظًا.'
@@ -107,10 +112,22 @@ export function TutorView({
     }
     const msg = String(rawErr?.message || rawErr || '');
     const lower = msg.toLowerCase();
+    const diagTag = errorCode || status ? ` (${[errorCode, status].filter(Boolean).join(' / ')})` : '';
+
     if (rawErr?.name === 'AbortError' || errorCode === 'TIMEOUT' || status === 504) {
       return lang === 'ar'
-        ? 'استغرق تجهيز الإجابة وقتًا أطول من المعتاد. سؤالك محفوظ كما هو، اضغط «إعادة المحاولة».'
-        : 'Preparing the answer took longer than usual. Your question is saved — please click Retry.';
+        ? `استغرق تجهيز الإجابة وقتًا أطول من المعتاد${diagTag}. سؤالك محفوظ كما هو، اضغط «إعادة المحاولة».`
+        : `Preparing the answer took longer than usual${diagTag}. Your question is saved — please click Retry.`;
+    }
+    if (status === 404 || errorCode === 'NOT_FOUND' || lower.includes('the page could not be found')) {
+      return lang === 'ar'
+        ? 'مسار المدرس الذكي على الخادم غير متاح حاليًا (HTTP 404). سؤالك محفوظ — يرجى التحقق من نشر دوال API على Vercel.'
+        : 'The AI Tutor API route was not found on the server (HTTP 404). Your question is saved.';
+    }
+    if (errorCode === 'AUTH_ERROR' || status === 401 || status === 403 || source === 'vercel_env') {
+      return lang === 'ar'
+        ? `خدمة المدرس الذكي غير مفعّلة في بيئة النشر بسبب مفتاح Gemini (${errorCode || status || 'AUTH'}). يرجى مراجعة GEMINI_API_KEY في Vercel.`
+        : `AI Tutor is not configured in Production (${errorCode || status || 'AUTH'}). Check GEMINI_API_KEY in Vercel.`;
     }
     if (
       errorCode === 'HIGH_DEMAND' ||
@@ -126,18 +143,18 @@ export function TutorView({
       lower.includes('unavailable')
     ) {
       return lang === 'ar'
-        ? 'المدرس الذكي مشغول حاليًا بطلبات كثيرة. سؤالك محفوظ كما هو — اضغط «إعادة المحاولة» بعد لحظات.'
-        : 'The AI Tutor is experiencing temporary high traffic. Your question is saved — click Retry in a moment.';
+        ? `المدرس الذكي مشغول حاليًا بطلبات كثيرة${diagTag}. سؤالك محفوظ كما هو — اضغط «إعادة المحاولة» بعد لحظات.`
+        : `The AI Tutor is experiencing temporary high traffic${diagTag}. Your question is saved — click Retry in a moment.`;
     }
     if (lower.includes('failed to fetch') || lower.includes('network') || errorCode === 'NETWORK_ERROR') {
       return lang === 'ar'
         ? 'تعذر الاتصال بالخادم مؤقتًا. سؤالك محفوظ كما هو، اضغط «إعادة المحاولة».'
         : 'Temporarily unable to reach the server. Your question is saved — please click Retry.';
     }
-    if (errorCode === 'AUTH_ERROR' || status === 401 || status === 403) {
+    if (errorCode === 'NON_JSON_RESPONSE' || errorCode === 'INVALID_JSON_RESPONSE') {
       return lang === 'ar'
-        ? 'خدمة المدرس الذكي غير متاحة حاليًا بسبب إعدادات الخادم.'
-        : 'The AI Tutor service is currently unavailable due to server configuration.';
+        ? `أعاد الخادم استجابة غير متوقعة${diagTag}. سؤالك محفوظ كما هو — اضغط «إعادة المحاولة».`
+        : `The server returned an unexpected non-JSON response${diagTag}. Your question is saved — click Retry.`;
     }
     if (errorCode === 'BAD_REQUEST' || status === 400) {
       return lang === 'ar'
@@ -145,8 +162,8 @@ export function TutorView({
         : 'Could not process the current question or attachment. Please review your input and try again.';
     }
     return lang === 'ar'
-      ? 'حدث خلل مؤقت أثناء تجهيز الإجابة. سؤالك ما زال محفوظًا — اضغط «إعادة المحاولة».'
-      : 'A temporary issue occurred while preparing the response. Your question is saved — click Retry.';
+      ? `حدث خلل مؤقت أثناء تجهيز الإجابة${diagTag}. سؤالك ما زال محفوظًا — اضغط «إعادة المحاولة».`
+      : `A temporary issue occurred while preparing the response${diagTag}. Your question is saved — click Retry.`;
   };
 
   const sendMessage = async (e?: React.FormEvent, customText?: string) => {
@@ -181,6 +198,7 @@ export function TutorView({
     setSlowWait(false);
     setErrorMsg('');
 
+    const reqStart = performance.now();
     const slowTimer = window.setTimeout(() => {
       setSlowWait(true);
     }, 1800);
@@ -263,6 +281,9 @@ export function TutorView({
             streamErrorPayload = {
               status: parsed.status || 503,
               errorCode: parsed.errorCode,
+              source: parsed.source,
+              model: parsed.model,
+              summary: parsed.primaryError?.summary || parsed.fallbackError?.summary,
               message: parsed.error || parsed.message,
             };
           }
@@ -290,20 +311,38 @@ export function TutorView({
           finalReply = accumulated;
         }
       } else if (contentType.includes('application/json')) {
+        const rawText = await res.text();
         let data: any = {};
         try {
-          data = await res.json();
+          data = rawText ? JSON.parse(rawText) : {};
         } catch {
-          throw new Error('INVALID_JSON_RESPONSE');
+          throw {
+            status: res.status || 502,
+            errorCode: 'INVALID_JSON_RESPONSE',
+            contentType,
+            message: rawText.slice(0, 120) || 'INVALID_JSON_RESPONSE',
+          };
         }
         if (!res.ok) {
-          throw { status: res.status, errorCode: data.errorCode, message: data.error || data.message };
+          throw {
+            status: res.status,
+            errorCode: data.errorCode,
+            source: data.source,
+            model: data.model,
+            summary: data.primaryError?.summary || data.fallbackError?.summary,
+            message: data.error || data.message,
+          };
         }
         finalReply = data.reply || '';
         nextInteractionId = data.interactionId || null;
       } else {
         const text = await res.text();
-        throw { status: res.status, message: text.slice(0, 120) || 'NON_JSON_RESPONSE' };
+        throw {
+          status: res.status || 502,
+          errorCode: res.status === 404 ? 'NOT_FOUND' : 'NON_JSON_RESPONSE',
+          contentType,
+          message: text.slice(0, 160) || 'NON_JSON_RESPONSE',
+        };
       }
 
       if (!finalReply || typeof finalReply !== 'string' || !finalReply.trim()) {
@@ -337,11 +376,22 @@ export function TutorView({
         console.warn('Background tutor session save warning:', saveErr);
       });
     } catch (err: any) {
+      const durationMs = Math.round(performance.now() - reqStart);
+      console.error('[TutorClient Error]', {
+        endpoint: '/api/ai/tutor',
+        status: err?.status || 0,
+        errorCode: err?.errorCode || err?.name || 'UNKNOWN',
+        source: err?.source || 'client_or_network',
+        model: err?.model || null,
+        contentType: err?.contentType || null,
+        durationMs,
+        summary: err?.summary || String(err?.message || '').slice(0, 160),
+      });
       setStreamingText('');
       setMessages(previousMessages);
       setInputText(savedInputText || textToSend);
       setAttachment(savedAttachment);
-      setErrorMsg(toFriendlyTutorError(err, err?.status, err?.errorCode));
+      setErrorMsg(toFriendlyTutorError(err, err?.status, err?.errorCode, err?.source));
     } finally {
       window.clearTimeout(slowTimer);
       window.clearTimeout(abortTimer);

@@ -147,7 +147,15 @@ export function SolverView({ lang, studyLang, profile }: SolverViewProps) {
         }),
       });
       const contentType = res.headers.get('content-type') || '';
-      const data = contentType.includes('application/json') ? await res.json() : {};
+      const rawText = await res.text();
+      let data: any = {};
+      if (contentType.includes('application/json') && rawText) {
+        try {
+          data = JSON.parse(rawText);
+        } catch {
+          data = {};
+        }
+      }
       if (!res.ok) {
         const isTraffic = res.status === 503 || res.status === 429 || data.errorCode === 'HIGH_DEMAND';
         throw new Error(
@@ -155,7 +163,14 @@ export function SolverView({ lang, studyLang, profile }: SolverViewProps) {
             ? lang === 'ar'
               ? 'النظام يواجه ضغطًا مؤقتًا حاليًا. مسألتك محفوظة، يرجى الضغط على حل مرة أخرى بعد لحظات.'
               : 'Service is experiencing temporary high traffic. Your problem is saved — please try again shortly.'
-            : data.error || (lang === 'ar' ? 'تعذر حل المسألة حاليًا.' : 'Solver request failed')
+            : data.error ||
+              (res.status === 404
+                ? lang === 'ar'
+                  ? 'مسار خدمة الحل غير متاح (HTTP 404). تحقق من إعدادات النشر على Vercel.'
+                  : 'Solver API route not found (HTTP 404).'
+                : lang === 'ar'
+                ? `تعذر حل المسألة حاليًا (HTTP ${res.status}).`
+                : `Solver request failed (HTTP ${res.status})`)
         );
       }
       setSolution(data.solution);
@@ -187,7 +202,15 @@ export function SolverView({ lang, studyLang, profile }: SolverViewProps) {
         }),
       });
       const contentType = res.headers.get('content-type') || '';
-      const data = contentType.includes('application/json') ? await res.json() : {};
+      const rawText = await res.text();
+      let data: any = {};
+      if (contentType.includes('application/json') && rawText) {
+        try {
+          data = JSON.parse(rawText);
+        } catch {
+          data = {};
+        }
+      }
       if (res.ok && data.explanation) {
         setStepExplanations((prev) => ({ ...prev, [stepKey]: data.explanation }));
       }

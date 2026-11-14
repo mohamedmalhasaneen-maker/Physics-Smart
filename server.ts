@@ -9,6 +9,7 @@ import {
   executeGeminiInteractionWithResilience,
   GeminiClientLike,
   GeminiResilienceError,
+  getConfiguredGeminiKey,
   getResilienceStateSnapshot,
   PRIMARY_GEMINI_MODEL,
   sanitizeSecret,
@@ -110,22 +111,42 @@ function formatCompactHistory(history?: Array<{ role: 'user' | 'model'; text: st
     .join('\n');
 }
 
+function inferErrorSource(err: GeminiResilienceError): 'vercel_env' | 'gemini_api' | 'backend' {
+  const summary = String(err.primaryError?.summary || '');
+  if (err.errorCode === 'AUTH_ERROR' && summary.includes('API_KEY_MISSING')) {
+    return 'vercel_env';
+  }
+  if (err.errorCode === 'BAD_REQUEST' || err.errorCode === 'INTERNAL_ERROR') {
+    return 'backend';
+  }
+  return 'gemini_api';
+}
+
 function buildErrorPayload(err: any, fallbackMessage: string) {
   if (err instanceof GeminiResilienceError) {
+    const source = inferErrorSource(err);
     return {
       status: err.httpStatus,
       body: {
         error: err.message,
         errorCode: err.errorCode,
         retryable: err.retryable,
+        source,
+        model: err.meta.model,
+        durationMs: err.meta.durationMs,
         primaryError: err.primaryError
-          ? { category: err.primaryError.category, status: err.primaryError.httpStatus }
+          ? {
+              category: err.primaryError.category,
+              status: err.primaryError.httpStatus,
+              summary: sanitizeSecret(err.primaryError.summary).slice(0, 220),
+            }
           : null,
         fallbackError: err.fallbackError
           ? {
               model: err.fallbackError.model,
               category: err.fallbackError.category,
               status: err.fallbackError.httpStatus,
+              summary: sanitizeSecret(err.fallbackError.summary).slice(0, 220),
             }
           : null,
       },
@@ -138,6 +159,7 @@ function buildErrorPayload(err: any, fallbackMessage: string) {
       error: fallbackMessage,
       errorCode: 'INTERNAL_ERROR',
       retryable: true,
+      source: 'backend',
       detail: process.env.NODE_ENV === 'production' ? undefined : safeMsg,
     },
   };
@@ -154,13 +176,26 @@ function writeSseEvent(res: express.Response, event: string, data: Record<string
   res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 }
 
-// Health check
+// Health check (also used to verify active Production deployment & Gemini key status without exposing secrets)
 app.get('/api/health', (_req, res) => {
+  const { envVarName } = getConfiguredGeminiKey();
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
   res.json({
     ok: true,
     service: 'physics-smart-api',
+    environment: process.env.VERCEL_ENV || process.env.NODE_ENV || 'development',
+    vercelRegion: process.env.VERCEL_REGION || null,
+    nodeVersion: process.version,
+    hasGeminiKey: Boolean(envVarName),
+    geminiKeyEnvVar: envVarName,
+    missingEnvVars: envVarName ? [] : ['GEMINI_API_KEY'],
     primaryModel: PRIMARY_GEMINI_MODEL,
+    tutorConfig: {
+      streaming: true,
+      detailDefault: 'concise',
+      thinkingDefault: 'low',
+    },
     resilience: getResilienceStateSnapshot(),
   });
 });
@@ -333,10 +368,23 @@ app.post('/api/ai/tutor', async (req, res) => {
         res.end();
       } catch (streamErr: any) {
         if (!streamAbort.signal.aborted) {
-          console.error('AI Tutor Stream Error:', sanitizeSecret(streamErr?.message || 'Unknown error'));
           const { status, body } = buildErrorPayload(
             streamErr,
             'تعذر الحصول على رد من المدرس الذكي حاليًا. يرجى المحاولة مرة أخرى.'
+          );
+          console.error(
+            '[TutorAPI Error]',
+            JSON.stringify({
+              endpoint: '/api/ai/tutor',
+              stream: true,
+              environment: process.env.VERCEL_ENV || process.env.NODE_ENV || 'development',
+              httpStatus: status,
+              errorCode: body.errorCode,
+              source: (body as any).source,
+              model: (body as any).model,
+              durationMs: Date.now() - reqStart,
+              detail: sanitizeSecret(streamErr?.message || 'Unknown error'),
+            })
           );
           writeSseEvent(res, 'error', { status, ...body });
         }
@@ -371,7 +419,24 @@ app.post('/api/ai/tutor', async (req, res) => {
       },
     });
   } catch (err: any) {
-    console.error('AI Tutor Error:', sanitizeSecret(err?.message || 'Unknown error'));
+    const { status, body } = buildErrorPayload(
+      err,
+      'تعذر الحصول على رد من المدرس الذكي حاليًا. يرجى المحاولة مرة أخرى.'
+    );
+    console.error(
+      '[TutorAPI Error]',
+      JSON.stringify({
+        endpoint: '/api/ai/tutor',
+        stream: wantsStream,
+        environment: process.env.VERCEL_ENV || process.env.NODE_ENV || 'development',
+        httpStatus: status,
+        errorCode: body.errorCode,
+        source: (body as any).source,
+        model: (body as any).model,
+        durationMs: Date.now() - reqStart,
+        detail: sanitizeSecret(err?.message || 'Unknown error'),
+      })
+    );
     sendResilienceError(res, err, 'تعذر الحصول على رد من المدرس الذكي حاليًا. يرجى المحاولة مرة أخرى.');
   }
 });
@@ -601,7 +666,7 @@ Use clean LaTeX ($...$ or $$...$$) and verify all units without skipping steps.`
 });
 
 // Guarantee any unknown /api/* route returns JSON instead of HTML
-app.all('/api/{*splat}', (_req, res) => {
+app.use('/api', (_req, res) => {
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
   res.status(404).json({ error: 'API endpoint not found.', errorCode: 'NOT_FOUND', retryable: false });
 });
@@ -622,7 +687,11 @@ app.use((err: any, req: express.Request, res: express.Response, next: express.Ne
 });
 
 async function startServer() {
-  if (process.env.NODE_ENV === 'test' || process.env.DISABLE_AUTO_LISTEN === 'true') {
+  if (
+    process.env.VERCEL ||
+    process.env.NODE_ENV === 'test' ||
+    process.env.DISABLE_AUTO_LISTEN === 'true'
+  ) {
     return;
   }
   if (process.env.NODE_ENV !== 'production') {
@@ -635,16 +704,14 @@ async function startServer() {
   } else {
     const distPath = path.resolve(__dirname, 'dist');
     app.use(express.static(distPath));
-    app.get('/{*splat}', (_req, res) => {
+    app.get('*', (_req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
 
-  if (!process.env.VERCEL) {
-    app.listen(PORT, '0.0.0.0', () => {
-      console.log(`Physics Smart server listening on http://localhost:${PORT}`);
-    });
-  }
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Physics Smart server listening on http://localhost:${PORT}`);
+  });
 }
 
 startServer();
