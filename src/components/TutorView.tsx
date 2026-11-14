@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Language,
   Lesson,
@@ -58,7 +58,10 @@ export function TutorView({
   const [inputText, setInputText] = useState('');
   const [attachment, setAttachment] = useState<{ name: string; mimeType: string; data: string } | null>(null);
   const [loading, setLoading] = useState(false);
+  const [slowWait, setSlowWait] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
+  const [lastInteractionId, setLastInteractionId] = useState<string | null>(null);
+  const inFlightRef = useRef(false);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -85,31 +88,99 @@ export function TutorView({
       .join('; ')}`;
   };
 
+  const toFriendlyTutorError = (rawErr: any, status?: number, errorCode?: string): string => {
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      return lang === 'ar'
+        ? 'يبدو أن الاتصال بالإنترنت مقطوع حاليًا. تأكد من اتصالك بالشبكة ثم اضغط إعادة المحاولة، سؤالك ما زال محفوظًا.'
+        : 'You appear to be offline. Check your connection and click Retry — your question is saved.';
+    }
+    const msg = String(rawErr?.message || rawErr || '');
+    const lower = msg.toLowerCase();
+    if (rawErr?.name === 'AbortError' || errorCode === 'TIMEOUT' || status === 504) {
+      return lang === 'ar'
+        ? 'استغرق تجهيز الإجابة وقتًا أطول من المعتاد. سؤالك محفوظ كما هو، اضغط «إعادة المحاولة».'
+        : 'Preparing the answer took longer than usual. Your question is saved — please click Retry.';
+    }
+    if (
+      errorCode === 'HIGH_DEMAND' ||
+      errorCode === 'RATE_LIMIT' ||
+      errorCode === 'SERVER_ERROR' ||
+      errorCode === 'MODEL_UNAVAILABLE' ||
+      status === 503 ||
+      status === 429 ||
+      status === 500 ||
+      status === 502 ||
+      lower.includes('503') ||
+      lower.includes('high demand') ||
+      lower.includes('unavailable')
+    ) {
+      return lang === 'ar'
+        ? 'المدرس الذكي مشغول حاليًا بطلبات كثيرة. سؤالك محفوظ كما هو — اضغط «إعادة المحاولة» بعد لحظات.'
+        : 'The AI Tutor is experiencing temporary high traffic. Your question is saved — click Retry in a moment.';
+    }
+    if (lower.includes('failed to fetch') || lower.includes('network') || errorCode === 'NETWORK_ERROR') {
+      return lang === 'ar'
+        ? 'تعذر الاتصال بالخادم مؤقتًا. سؤالك محفوظ كما هو، اضغط «إعادة المحاولة».'
+        : 'Temporarily unable to reach the server. Your question is saved — please click Retry.';
+    }
+    if (errorCode === 'AUTH_ERROR' || status === 401 || status === 403) {
+      return lang === 'ar'
+        ? 'خدمة المدرس الذكي غير متاحة حاليًا بسبب إعدادات الخادم.'
+        : 'The AI Tutor service is currently unavailable due to server configuration.';
+    }
+    if (errorCode === 'BAD_REQUEST' || status === 400) {
+      return lang === 'ar'
+        ? 'تعذر قراءة صيغة السؤال أو المرفق الحالي. تأكد من المدخلات وحاول مرة أخرى.'
+        : 'Could not process the current question or attachment. Please review your input and try again.';
+    }
+    return lang === 'ar'
+      ? 'حدث خلل مؤقت أثناء تجهيز الإجابة. سؤالك ما زال محفوظًا — اضغط «إعادة المحاولة».'
+      : 'A temporary issue occurred while preparing the response. Your question is saved — click Retry.';
+  };
+
   const sendMessage = async (e?: React.FormEvent, customText?: string) => {
     e?.preventDefault();
-    const textToSend = customText !== undefined ? customText : (inputText.trim() || (lang === 'ar' ? 'حلل المرفق التالي.' : 'Please analyze this attachment.'));
-    if ((!textToSend && !attachment) || loading) return;
+    if (inFlightRef.current || loading) return;
+
+    const rawTrimmed = customText !== undefined ? customText.trim() : inputText.trim();
+    const hasAttachment = Boolean(attachment);
+    if (!rawTrimmed && !hasAttachment) return;
+
+    const textToSend = rawTrimmed || (lang === 'ar' ? 'حلل المرفق التالي.' : 'Please analyze this attachment.');
+    const previousMessages = messages;
+    const savedInputText = inputText;
+    const savedAttachment = attachment;
 
     const userMsg: TutorMessage = {
       id: `m-${Date.now()}`,
       role: 'user',
       text: textToSend,
       timestamp: new Date().toISOString(),
-      attachmentName: attachment?.name,
+      attachmentName: savedAttachment?.name,
     };
 
-    const nextMessages = customText !== undefined ? messages : [...messages, userMsg];
-    if (customText === undefined) {
-      setMessages(nextMessages);
-      setInputText('');
-    }
+    const nextMessages = [...previousMessages, userMsg];
+
+    inFlightRef.current = true;
+    setMessages(nextMessages);
+    setInputText('');
+    setAttachment(null);
     setLoading(true);
+    setSlowWait(false);
     setErrorMsg('');
+
+    const slowTimer = window.setTimeout(() => {
+      setSlowWait(true);
+    }, 1800);
+
+    const controller = new AbortController();
+    const abortTimer = window.setTimeout(() => controller.abort(), 120000);
 
     try {
       const res = await fetch('/api/ai/tutor', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
         body: JSON.stringify({
           message: userMsg.text,
           mode,
@@ -120,22 +191,37 @@ export function TutorView({
           track: profile.track,
           grade: profile.grade,
           lessonContext: buildLessonContextString(),
-          history: (customText !== undefined ? messages : nextMessages).slice(0, -1).map((m) => ({ role: m.role, text: m.text })),
-          attachment: attachment ? { mimeType: attachment.mimeType, data: attachment.data } : undefined,
+          history: previousMessages.map((m) => ({ role: m.role, text: m.text })),
+          previousInteractionId: lastInteractionId || undefined,
+          attachment: savedAttachment
+            ? { mimeType: savedAttachment.mimeType, data: savedAttachment.data }
+            : undefined,
         }),
       });
 
       const contentType = res.headers.get('content-type') || '';
       let data: any = {};
       if (contentType.includes('application/json')) {
-        data = await res.json();
+        try {
+          data = await res.json();
+        } catch {
+          throw new Error('INVALID_JSON_RESPONSE');
+        }
       } else {
         const text = await res.text();
-        throw new Error(text.slice(0, 120) || `Server returned non-JSON response (${res.status})`);
+        throw { status: res.status, message: text.slice(0, 120) || 'NON_JSON_RESPONSE' };
       }
 
       if (!res.ok) {
-        throw new Error(data.error || data.message || `Server error (${res.status})`);
+        throw { status: res.status, errorCode: data.errorCode, message: data.error || data.message };
+      }
+
+      if (!data.reply || typeof data.reply !== 'string' || !data.reply.trim()) {
+        throw { status: 502, errorCode: 'EMPTY_RESPONSE', message: 'Empty reply' };
+      }
+
+      if (data.interactionId) {
+        setLastInteractionId(data.interactionId);
       }
 
       const modelMsg: TutorMessage = {
@@ -144,9 +230,8 @@ export function TutorView({
         text: data.reply,
         timestamp: new Date().toISOString(),
       };
-      const finalMessages = customText !== undefined ? [...messages, modelMsg] : [...nextMessages, modelMsg];
+      const finalMessages = [...nextMessages, modelMsg];
       setMessages(finalMessages);
-      setAttachment(null);
 
       // Persist session in Firestore
       const sessionTitle = finalMessages[0]?.text.slice(0, 60) || 'Physics Session';
@@ -159,13 +244,16 @@ export function TutorView({
         messagesJson: JSON.stringify(finalMessages),
       });
     } catch (err: any) {
-      console.error('Tutor error:', err);
-      setErrorMsg(err?.message || 'Error connecting to AI Tutor. Please try again.');
-      if (customText === undefined) {
-        setInputText(textToSend); // Restore user input so they don't lose it
-      }
+      setMessages(previousMessages);
+      setInputText(savedInputText || textToSend);
+      setAttachment(savedAttachment);
+      setErrorMsg(toFriendlyTutorError(err, err?.status, err?.errorCode));
     } finally {
+      window.clearTimeout(slowTimer);
+      window.clearTimeout(abortTimer);
+      inFlightRef.current = false;
       setLoading(false);
+      setSlowWait(false);
     }
   };
 
@@ -175,6 +263,8 @@ export function TutorView({
       setActiveSessionId(s.id);
       setMode(s.mode);
       setMessages(parsed);
+      setLastInteractionId(null);
+      setErrorMsg('');
     } catch {
       // ignore malformed
     }
@@ -184,6 +274,7 @@ export function TutorView({
     setActiveSessionId(`session-${Date.now()}`);
     setMessages([]);
     setAttachment(null);
+    setLastInteractionId(null);
     setErrorMsg('');
   };
 
@@ -440,18 +531,27 @@ export function TutorView({
           {loading && (
             <div className="flex items-center gap-2 text-xs text-blue-600 dark:text-cyan-400">
               <Loader2 className="w-4 h-4 animate-spin" />
-              <span>{lang === 'ar' ? 'جارٍ التحليل الفيزيائي والتحقق من القوانين...' : 'Analyzing physics & verifying units...'}</span>
+              <span>
+                {slowWait
+                  ? lang === 'ar'
+                    ? 'ثواني، بنجهز أفضل طريقة للإجابة على سؤالك...'
+                    : 'Just a moment, preparing the best way to answer your question...'
+                  : lang === 'ar'
+                  ? 'جارٍ التحليل الفيزيائي والتحقق من القوانين...'
+                  : 'Analyzing physics & verifying units...'}
+              </span>
             </div>
           )}
         </div>
 
         {errorMsg && (
-          <div className="mx-5 mb-2 flex items-center justify-between text-xs text-rose-500 bg-rose-500/10 rounded-xl p-2.5">
+          <div className="mx-5 mb-2 flex items-center justify-between gap-3 text-xs text-rose-500 bg-rose-500/10 rounded-xl p-2.5">
             <span>{errorMsg}</span>
             <button
               type="button"
-              onClick={() => sendMessage(undefined, inputText)}
-              className="px-2.5 py-1 rounded-lg bg-rose-500 text-white font-semibold hover:bg-rose-600 transition"
+              disabled={loading}
+              onClick={() => sendMessage(undefined)}
+              className="px-2.5 py-1 rounded-lg bg-rose-500 text-white font-semibold hover:bg-rose-600 disabled:opacity-50 transition shrink-0"
             >
               {lang === 'ar' ? 'إعادة المحاولة' : 'Retry'}
             </button>

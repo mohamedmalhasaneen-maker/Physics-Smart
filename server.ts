@@ -2,8 +2,15 @@ import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
-import { GoogleGenAI, Type } from '@google/genai';
+import { Type } from '@google/genai';
 import { evaluate } from 'mathjs';
+import {
+  executeGeminiInteractionWithResilience,
+  GeminiResilienceError,
+  getResilienceStateSnapshot,
+  PRIMARY_GEMINI_MODEL,
+  sanitizeSecret,
+} from './server/geminiResilience.ts';
 
 dotenv.config();
 
@@ -21,28 +28,53 @@ app.use((_req, res, next) => {
 
 app.use(express.json({ limit: '15mb' }));
 
-function getGeminiClient() {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    throw new Error('GEMINI_API_KEY is not configured in environment.');
+function buildAttachmentPart(attachment?: { mimeType: string; data: string }) {
+  if (!attachment?.data || !attachment?.mimeType) return null;
+  const isImage = attachment.mimeType.toLowerCase().startsWith('image/');
+  return {
+    type: isImage ? 'image' : 'document',
+    data: attachment.data,
+    mime_type: attachment.mimeType,
+  };
+}
+
+function sendResilienceError(res: express.Response, err: any, fallbackMessage: string) {
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  if (err instanceof GeminiResilienceError) {
+    res.status(err.httpStatus).json({
+      error: err.message,
+      errorCode: err.errorCode,
+      retryable: err.retryable,
+      primaryError: err.primaryError ? { category: err.primaryError.category, status: err.primaryError.httpStatus } : null,
+      fallbackError: err.fallbackError
+        ? { model: err.fallbackError.model, category: err.fallbackError.category, status: err.fallbackError.httpStatus }
+        : null,
+    });
+    return;
   }
-  return new GoogleGenAI({
-    apiKey,
-    httpOptions: {
-      headers: {
-        'User-Agent': 'physics-smart-aistudio',
-      },
-    },
+  const safeMsg = sanitizeSecret(err?.message || fallbackMessage);
+  res.status(500).json({
+    error: fallbackMessage,
+    errorCode: 'INTERNAL_ERROR',
+    retryable: true,
+    detail: process.env.NODE_ENV === 'production' ? undefined : safeMsg,
   });
 }
 
 // Health check
 app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, service: 'physics-smart-api' });
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.json({
+    ok: true,
+    service: 'physics-smart-api',
+    primaryModel: PRIMARY_GEMINI_MODEL,
+    resilience: getResilienceStateSnapshot(),
+  });
 });
 
 // Deterministic Math Engine Endpoint (mathjs)
 app.post('/api/math/verify', (req, res) => {
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
   try {
     const { expression, expected, tolerance = 0.02 } = req.body as {
       expression?: string;
@@ -69,7 +101,7 @@ app.post('/api/math/verify', (req, res) => {
   }
 });
 
-// AI Physics Tutor Endpoint using Gemini Interactions API (gemini-3.8-flash)
+// AI Physics Tutor Endpoint using Gemini Interactions API (gemini-3.8-flash primary + auto-failover)
 app.post('/api/ai/tutor', async (req, res) => {
   try {
     const {
@@ -83,6 +115,7 @@ app.post('/api/ai/tutor', async (req, res) => {
       grade = '',
       lessonContext = '',
       history = [],
+      previousInteractionId,
       attachment,
     } = req.body as {
       message: string;
@@ -95,15 +128,14 @@ app.post('/api/ai/tutor', async (req, res) => {
       grade: string;
       lessonContext?: string;
       history?: Array<{ role: 'user' | 'model'; text: string }>;
+      previousInteractionId?: string;
       attachment?: { mimeType: string; data: string };
     };
 
     if (!message && !attachment) {
-      res.status(400).json({ error: 'Message or attachment is required.' });
+      res.status(400).json({ error: 'Message or attachment is required.', errorCode: 'BAD_REQUEST', retryable: false });
       return;
     }
-
-    const ai = getGeminiClient();
 
     const trackLabel =
       track === 'thanawiya'
@@ -114,18 +146,18 @@ app.post('/api/ai/tutor', async (req, res) => {
 
     const modeInstructions =
       mode === 'tutor'
-        ? `You are in TUTOR MODE (وضع المدرس). Explain physics concepts from first principles using clear analogies, step-by-step derivations, symbol & unit definitions, and check the student's understanding with a gentle follow-up check. Use warm Egyptian Arabic teacher persona mixed with clear scientific terms.`
+        ? `You are in TUTOR MODE (وضع المدرس). Explain physics concepts from first principles using clear analogies, step-by-step derivations, complete calculations without skipping steps, symbol & SI unit definitions, and check the student's understanding with a gentle follow-up check. Use a warm, encouraging Egyptian Arabic physics teacher persona (اللهجة المصرية الواضحة المبسطة مع الدقة العلمية).`
         : mode === 'analyzer'
-        ? `You are in ANALYZER MODE (وضع المحلل). Dissect the problem or diagram rigorously: list Givens with units, Target, SI unit conversions, Formula selection rationale, Algebraic substitution, Numerical evaluation, and Physical sanity check.`
+        ? `You are in ANALYZER MODE (وضع المحلل). Dissect the problem or diagram rigorously without skipping steps: list Givens with units, Target, SI unit conversions, Formula selection rationale, Algebraic substitution, Numerical evaluation, and Physical sanity check.`
         : `You are in EXAMINER MODE (وضع الممتحن). Ask ONE challenging conceptual or numerical question appropriate to the student's track and wait for their attempt. NEVER reveal the final answer before the student attempts! If the message contains the student's attempt, grade it carefully, point out exact errors or unit mistakes, explain why, and then give the next question or follow-up.`;
 
     const languageInstruction =
       language === 'bilingual'
         ? `BILINGUAL (Arabic + English): Respond clearly in BOTH Arabic and English! Provide:
-  (1) A complete, natural scientific Arabic explanation (العربية الفصحى العلمية مع لمحة مدرس مصري مبسطة) with key English physics terms in parentheses.
+  (1) A complete, natural scientific Arabic explanation (باللهجة المصرية التعليمية المبسطة والعربية العلمية السليمة) with key English physics terms in parentheses.
   (2) Directly below or paired cleanly, an English Explanation section ("**English Explanation:**") covering the same reasoning and terminology in crisp academic English.`
         : language === 'ar'
-        ? 'Arabic (اللهجة التعليمية الواضحة واللغة العربية الفصحى العلمية المبسطة مع المصطلحات الإنجليزية بين قوسين).'
+        ? 'Arabic (اشرح بأسلوب مدرس فيزياء مصري ودود وشاطر: لهجة مصرية مبسطة ومفهومة ممزوجة بالمصطلحات العلمية الدقيقة وبالرموز والوحدات القياسية الإنجليزية بين قوسين). Understand questions written in Arabic, English, or mixed Arabic-English.'
         : 'English (clear academic English; understand questions written in Arabic, English, or mixed Arabic-English).';
 
     const systemInstruction = `You are Physics Smart AI Tutor (مدرس الفيزياء الذكي).
@@ -134,59 +166,66 @@ Response Language: ${languageInstruction}.
 Explanation Level: ${level}. Style: ${style}. Depth: ${detail}.
 ${modeInstructions}
 
-SCIENTIFIC ACCURACY RULES (MANDATORY):
+SCIENTIFIC ACCURACY & CONTINUITY RULES (MANDATORY):
 1. Verify all laws, equations, constants, and SI units explicitly.
 2. Clearly state physical assumptions (e.g., negligible air resistance, ideal wire, g = 9.8 m/s² or 10 m/s²).
 3. Distinguish exact analytical expressions from rounded decimal approximations.
-4. NEVER fabricate official ministry curriculum claims. If grounded context is provided below, align strictly with it.
-5. If the student's question or image is ambiguous or missing values, ask for clarification instead of guessing.
-6. Format all equations in clean LaTeX wrapped in $$...$$ for display blocks or $...$ for inline formulas.
+4. NEVER skip intermediate algebraic or numerical problem-solving steps.
+5. NEVER fabricate official ministry curriculum claims. If grounded context is provided below, align strictly with it.
+6. If the student's question or image is ambiguous or missing values, ask for clarification instead of guessing.
+7. Maintain full continuity with prior conversation messages, re-explain concepts patiently when asked, and keep the exact same persona consistently.
+8. Format all equations in clean LaTeX wrapped in $$...$$ for display blocks or $...$ for inline formulas.
 ${lessonContext ? `\nAPPROVED PLATFORM LESSON CONTEXT:\n${lessonContext.slice(0, 6000)}` : ''}`;
 
+    const attachmentPart = buildAttachmentPart(attachment);
+    const currentMessageText = message || (language === 'ar' ? 'حلل المرفق التالي.' : 'Analyze attachment.');
+
     const conversationTranscript = (history || [])
-      .slice(-10)
+      .slice(-12)
       .map((h) => `${h.role === 'user' ? 'Student' : 'Tutor'}: ${h.text}`)
       .join('\n');
 
-    const inputParts: any[] = [];
-    if (attachment?.data && attachment?.mimeType) {
-      inputParts.push({
-        type: 'image',
-        data: attachment.data,
-        mime_type: attachment.mimeType,
-      });
-    }
+    const transcriptText = conversationTranscript
+      ? `Previous Conversation Context:\n${conversationTranscript}\n\nCurrent Student Message:\n${currentMessageText}`
+      : currentMessageText;
 
-    const promptText = conversationTranscript
-      ? `${conversationTranscript}\nStudent: ${message || (language === 'ar' ? 'حلل المرفق التالي.' : 'Analyze attachment.')}`
-      : (message || (language === 'ar' ? 'حلل المرفق التالي.' : 'Analyze attachment.'));
+    const currentOnlyInput = attachmentPart
+      ? [attachmentPart, { type: 'text', text: currentMessageText }]
+      : currentMessageText;
 
-    inputParts.push({
-      type: 'text',
-      text: promptText,
-    });
+    const fullContextInput = attachmentPart
+      ? [attachmentPart, { type: 'text', text: transcriptText }]
+      : transcriptText;
 
-    const interaction = await ai.interactions.create({
-      model: 'gemini-3.8-flash',
-      input: inputParts.length === 1 && inputParts[0].type === 'text' ? inputParts[0].text : inputParts,
-      system_instruction: systemInstruction,
-      generation_config: {
-        thinking_level: detail === 'detailed' ? 'high' : 'low',
+    const result = await executeGeminiInteractionWithResilience(
+      {
+        input: previousInteractionId ? currentOnlyInput : fullContextInput,
+        inputWithoutPreviousId: fullContextInput,
+        system_instruction: systemInstruction,
+        previous_interaction_id: previousInteractionId || undefined,
+        thinking_level: detail === 'detailed' ? 'medium' : 'low',
+      },
+      { endpoint: '/api/ai/tutor' }
+    );
+
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.json({
+      reply: result.text,
+      interactionId: result.interaction?.id || null,
+      meta: {
+        model: result.meta.model,
+        usedFallback: result.meta.usedFallback,
+        attempts: result.meta.attempts,
+        durationMs: result.meta.durationMs,
       },
     });
-
-    const replyText = interaction.output_text || '';
-
-    res.setHeader('Content-Type', 'application/json; charset=utf-8');
-    res.json({ reply: replyText });
   } catch (err: any) {
-    console.error('AI Tutor Error:', err);
-    res.setHeader('Content-Type', 'application/json; charset=utf-8');
-    res.status(500).json({ error: err?.message || 'Failed to generate AI tutor response.' });
+    console.error('AI Tutor Error:', sanitizeSecret(err?.message || 'Unknown error'));
+    sendResilienceError(res, err, 'تعذر الحصول على رد من المدرس الذكي حاليًا. يرجى المحاولة مرة أخرى.');
   }
 });
 
-// Smart Physics Solver using Gemini Interactions API (gemini-3.8-flash)
+// Smart Physics Solver using Gemini Interactions API (gemini-3.8-flash primary + auto-failover)
 app.post('/api/ai/solver', async (req, res) => {
   try {
     const {
@@ -206,11 +245,13 @@ app.post('/api/ai/solver', async (req, res) => {
     };
 
     if (!problemText.trim() && manualGivens.length === 0 && !attachment) {
-      res.status(400).json({ error: 'Please provide a problem statement, manual givens, or an image/PDF.' });
+      res.status(400).json({
+        error: 'Please provide a problem statement, manual givens, or an image/PDF.',
+        errorCode: 'BAD_REQUEST',
+        retryable: false,
+      });
       return;
     }
-
-    const ai = getGeminiClient();
 
     const givensSummary =
       manualGivens.length > 0
@@ -221,86 +262,76 @@ app.post('/api/ai/solver', async (req, res) => {
       language === 'bilingual'
         ? 'BOTH Arabic and English (Bilingual mode): for every narrative field, write a clear scientific Arabic line first followed by a newline and the matching English translation/terminology on the next line'
         : language === 'ar'
-        ? 'Arabic (with standard English physics symbols/LaTeX and SI units)'
+        ? 'Arabic (with clear Egyptian physics teacher clarity, standard English physics symbols/LaTeX, and SI units)'
         : 'English';
 
     const prompt = `Analyze and solve the following physics problem for the ${track} curriculum in ${solverLangDesc}.
 If the problem is unclear or missing critical numerical data, set needsClarification=true and explain what is missing in clarificationQuestion.
-Otherwise, provide all 11 pedagogical steps accurately, plus a pure numeric mathjs-compatible arithmetic expression in "verificationExpression" (using only numbers, +, -, *, /, ^, sqrt, sin, cos, tan, pi) so our deterministic math engine can verify the final scalar result!
+Otherwise, provide all 11 pedagogical steps accurately without skipping any derivation or arithmetic step, plus a pure numeric mathjs-compatible arithmetic expression in "verificationExpression" (using only numbers, +, -, *, /, ^, sqrt, sin, cos, tan, pi) so our deterministic math engine can verify the final scalar result!
 
 Problem:
 ${problemText}
 ${givensSummary}`;
 
-    const inputParts: any[] = [];
-    if (attachment?.data && attachment?.mimeType) {
-      inputParts.push({
-        type: 'image',
-        data: attachment.data,
-        mime_type: attachment.mimeType,
-      });
-    }
-    inputParts.push({
-      type: 'text',
-      text: prompt,
-    });
+    const attachmentPart = buildAttachmentPart(attachment);
+    const solverInput = attachmentPart ? [attachmentPart, { type: 'text', text: prompt }] : prompt;
 
-    const interaction = await ai.interactions.create({
-      model: 'gemini-3.8-flash',
-      input: inputParts.length === 1 && inputParts[0].type === 'text' ? inputParts[0].text : inputParts,
-      system_instruction:
-        'You are an exact Physics Problem Solver. Verify every unit conversion, state assumptions (like g=9.8 m/s^2), use standard LaTeX for formulas, and ensure arithmetic in verificationExpression matches the final numerical answer.',
-      response_format: {
-        type: Type.OBJECT,
-        properties: {
-          needsClarification: { type: Type.BOOLEAN },
-          clarificationQuestion: { type: Type.STRING },
-          understanding: { type: Type.STRING },
-          givens: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                symbol: { type: Type.STRING },
-                value: { type: Type.STRING },
-                unit: { type: Type.STRING },
-                meaning: { type: Type.STRING },
+    const result = await executeGeminiInteractionWithResilience(
+      {
+        input: solverInput,
+        system_instruction:
+          'You are an exact Physics Problem Solver. Verify every unit conversion, state assumptions (like g=9.8 m/s^2), use standard LaTeX for formulas, and ensure arithmetic in verificationExpression matches the final numerical answer.',
+        response_format: {
+          type: Type.OBJECT,
+          properties: {
+            needsClarification: { type: Type.BOOLEAN },
+            clarificationQuestion: { type: Type.STRING },
+            understanding: { type: Type.STRING },
+            givens: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  symbol: { type: Type.STRING },
+                  value: { type: Type.STRING },
+                  unit: { type: Type.STRING },
+                  meaning: { type: Type.STRING },
+                },
               },
             },
+            target: { type: Type.STRING },
+            unitConversions: { type: Type.STRING },
+            selectedFormulaLatex: { type: Type.STRING },
+            formulaReason: { type: Type.STRING },
+            substitutionLatex: { type: Type.STRING },
+            calculations: { type: Type.STRING },
+            verificationExpression: { type: Type.STRING },
+            finalNumericValue: { type: Type.NUMBER },
+            finalAnswerText: { type: Type.STRING },
+            unit: { type: Type.STRING },
+            sanityCheck: { type: Type.STRING },
           },
-          target: { type: Type.STRING },
-          unitConversions: { type: Type.STRING },
-          selectedFormulaLatex: { type: Type.STRING },
-          formulaReason: { type: Type.STRING },
-          substitutionLatex: { type: Type.STRING },
-          calculations: { type: Type.STRING },
-          verificationExpression: { type: Type.STRING },
-          finalNumericValue: { type: Type.NUMBER },
-          finalAnswerText: { type: Type.STRING },
-          unit: { type: Type.STRING },
-          sanityCheck: { type: Type.STRING },
+          required: [
+            'needsClarification',
+            'understanding',
+            'givens',
+            'target',
+            'unitConversions',
+            'selectedFormulaLatex',
+            'formulaReason',
+            'substitutionLatex',
+            'calculations',
+            'finalAnswerText',
+            'unit',
+            'sanityCheck',
+          ],
         },
-        required: [
-          'needsClarification',
-          'understanding',
-          'givens',
-          'target',
-          'unitConversions',
-          'selectedFormulaLatex',
-          'formulaReason',
-          'substitutionLatex',
-          'calculations',
-          'finalAnswerText',
-          'unit',
-          'sanityCheck',
-        ],
+        thinking_level: 'medium',
       },
-      generation_config: {
-        thinking_level: 'high',
-      },
-    });
+      { endpoint: '/api/ai/solver', timeoutMs: 45000 }
+    );
 
-    const fullOutput = interaction.output_text || '';
+    const fullOutput = result.text;
     let parsed: any = {};
     try {
       const jsonMatch = fullOutput.match(/```json\s*([\s\S]*?)\s*```/) || fullOutput.match(/([\{\[][\s\S]*[\}\]])/);
@@ -309,8 +340,8 @@ ${givensSummary}`;
       } else {
         parsed = JSON.parse(fullOutput);
       }
-    } catch (e) {
-      console.error('Solver JSON parse error:', fullOutput);
+    } catch {
+      console.error('Solver JSON parse error on output length:', fullOutput.length);
       parsed = {
         needsClarification: false,
         understanding: fullOutput,
@@ -354,15 +385,23 @@ ${givensSummary}`;
     }
 
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
-    res.json({ solution: parsed, mathVerification });
+    res.json({
+      solution: parsed,
+      mathVerification,
+      meta: {
+        model: result.meta.model,
+        usedFallback: result.meta.usedFallback,
+        attempts: result.meta.attempts,
+        durationMs: result.meta.durationMs,
+      },
+    });
   } catch (err: any) {
-    console.error('Solver Error:', err);
-    res.setHeader('Content-Type', 'application/json; charset=utf-8');
-    res.status(500).json({ error: err?.message || 'Failed to solve physics problem.' });
+    console.error('Solver Error:', sanitizeSecret(err?.message || 'Unknown error'));
+    sendResilienceError(res, err, 'تعذر حل المسألة حاليًا بسبب ضغط مؤقت. يرجى إعادة المحاولة.');
   }
 });
 
-// Explain a specific step in the solver using Interactions API (gemini-3.8-flash)
+// Explain a specific step in the solver using Interactions API (gemini-3.8-flash primary + auto-failover)
 app.post('/api/ai/solver/explain-step', async (req, res) => {
   try {
     const { stepTitle, stepContent, problemContext, language = 'ar' } = req.body as {
@@ -371,34 +410,62 @@ app.post('/api/ai/solver/explain-step', async (req, res) => {
       problemContext: string;
       language?: 'ar' | 'en' | 'bilingual';
     };
-    const ai = getGeminiClient();
+
     const stepLangPrompt =
       language === 'bilingual'
-        ? 'Bilingual (Arabic explanation first, followed by a clear English explanation section)'
+        ? 'Bilingual (Egyptian-friendly clear Arabic explanation first, followed by a crisp English explanation section)'
         : language === 'ar'
-        ? 'Arabic (with English physics terms in parentheses)'
+        ? 'Arabic (أسلوب مدرس فيزياء مصري مبسط وواضح مع المصطلحات الإنجليزية بين قوسين)'
         : 'English';
 
-    const interaction = await ai.interactions.create({
-      model: 'gemini-3.8-flash',
-      input: `Explain this specific physics solution step clearly for a student who wants deeper understanding.
+    const result = await executeGeminiInteractionWithResilience(
+      {
+        input: `Explain this specific physics solution step clearly for a student who wants deeper understanding.
 Language: ${stepLangPrompt}
 Step: ${stepTitle}
 Step Content: ${stepContent}
 Original Problem Context: ${problemContext}
-Use clean LaTeX ($...$ or $$...$$) and verify all units.`,
-      generation_config: {
+Use clean LaTeX ($...$ or $$...$$) and verify all units without skipping steps.`,
         thinking_level: 'low',
       },
-    });
+      { endpoint: '/api/ai/solver/explain-step' }
+    );
 
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
-    res.json({ explanation: interaction.output_text || '' });
+    res.json({
+      explanation: result.text,
+      meta: {
+        model: result.meta.model,
+        usedFallback: result.meta.usedFallback,
+        attempts: result.meta.attempts,
+        durationMs: result.meta.durationMs,
+      },
+    });
   } catch (err: any) {
-    console.error('Explain Step Error:', err);
-    res.setHeader('Content-Type', 'application/json; charset=utf-8');
-    res.status(500).json({ error: err?.message || 'Failed to explain step.' });
+    console.error('Explain Step Error:', sanitizeSecret(err?.message || 'Unknown error'));
+    sendResilienceError(res, err, 'تعذر شرح هذه الخطوة حاليًا. يرجى إعادة المحاولة.');
   }
+});
+
+// Guarantee any unknown /api/* route returns JSON instead of HTML
+app.all('/api/{*splat}', (_req, res) => {
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.status(404).json({ error: 'API endpoint not found.', errorCode: 'NOT_FOUND', retryable: false });
+});
+
+// JSON error middleware for malformed request bodies or payload size errors on /api/*
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (req.path.startsWith('/api/')) {
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    const status = typeof err?.status === 'number' ? err.status : 400;
+    res.status(status).json({
+      error: status === 413 ? 'حجم المرفق أكبر من الحد المسموح.' : 'صيغة الطلب غير صالحة.',
+      errorCode: 'BAD_REQUEST',
+      retryable: false,
+    });
+    return;
+  }
+  next(err);
 });
 
 async function startServer() {

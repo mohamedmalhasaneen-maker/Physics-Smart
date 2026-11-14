@@ -69,6 +69,7 @@ export function SolverView({ lang, studyLang, profile }: SolverViewProps) {
 
   const [stepExplanations, setStepExplanations] = useState<Record<string, string>>({});
   const [explainingStep, setExplainingStep] = useState<string | null>(null);
+  const solveInFlightRef = useRef(false);
 
   const startCamera = async () => {
     setErrorMsg('');
@@ -126,6 +127,8 @@ export function SolverView({ lang, studyLang, profile }: SolverViewProps) {
   };
 
   const handleSolve = async () => {
+    if (solveInFlightRef.current || loading) return;
+    solveInFlightRef.current = true;
     setLoading(true);
     setErrorMsg('');
     setSolution(null);
@@ -143,19 +146,34 @@ export function SolverView({ lang, studyLang, profile }: SolverViewProps) {
           attachment: attachment ? { mimeType: attachment.mimeType, data: attachment.data } : undefined,
         }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Solver request failed');
+      const contentType = res.headers.get('content-type') || '';
+      const data = contentType.includes('application/json') ? await res.json() : {};
+      if (!res.ok) {
+        const isTraffic = res.status === 503 || res.status === 429 || data.errorCode === 'HIGH_DEMAND';
+        throw new Error(
+          isTraffic
+            ? lang === 'ar'
+              ? 'النظام يواجه ضغطًا مؤقتًا حاليًا. مسألتك محفوظة، يرجى الضغط على حل مرة أخرى بعد لحظات.'
+              : 'Service is experiencing temporary high traffic. Your problem is saved — please try again shortly.'
+            : data.error || (lang === 'ar' ? 'تعذر حل المسألة حاليًا.' : 'Solver request failed')
+        );
+      }
       setSolution(data.solution);
       setMathVerif(data.mathVerification);
     } catch (err: any) {
-      setErrorMsg(err?.message || 'Failed to solve problem.');
+      if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        setErrorMsg(lang === 'ar' ? 'يبدو أن الاتصال بالإنترنت مقطوع حاليًا.' : 'You appear to be offline.');
+      } else {
+        setErrorMsg(err?.message || (lang === 'ar' ? 'تعذر حل المسألة حاليًا. يرجى المحاولة مرة أخرى.' : 'Failed to solve problem.'));
+      }
     } finally {
+      solveInFlightRef.current = false;
       setLoading(false);
     }
   };
 
   const askStepDetail = async (stepKey: string, stepTitle: string, stepContent: string) => {
-    if (stepExplanations[stepKey]) return;
+    if (stepExplanations[stepKey] || explainingStep) return;
     setExplainingStep(stepKey);
     try {
       const res = await fetch('/api/ai/solver/explain-step', {
@@ -168,7 +186,8 @@ export function SolverView({ lang, studyLang, profile }: SolverViewProps) {
           language: outputLang,
         }),
       });
-      const data = await res.json();
+      const contentType = res.headers.get('content-type') || '';
+      const data = contentType.includes('application/json') ? await res.json() : {};
       if (res.ok && data.explanation) {
         setStepExplanations((prev) => ({ ...prev, [stepKey]: data.explanation }));
       }
