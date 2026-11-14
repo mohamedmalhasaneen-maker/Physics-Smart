@@ -1149,8 +1149,6 @@ export default function App() {
       items: [
         { id: 'lab', label: t.nav.lab, icon: <FlaskConical className="w-4 h-4" /> },
         { id: 'graphing', label: t.nav.graphing, icon: <LineChart className="w-4 h-4" /> },
-        { id: 'questions', label: t.nav.questions, icon: <HelpCircle className="w-4 h-4" /> },
-        { id: 'exams', label: t.nav.exams, icon: <ClipboardCheck className="w-4 h-4" /> },
       ],
     },
     {
