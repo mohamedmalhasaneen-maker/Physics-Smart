@@ -87,7 +87,9 @@ import {
   LayoutDashboard,
   LineChart,
   LogOut,
+  Maximize2,
   Menu,
+  Minimize2,
   Moon,
   Settings2,
   Shield,
@@ -116,6 +118,25 @@ export default function App() {
   const [selectedLessonId, setSelectedLessonId] = useState<string | null>(null);
   const [tutorLessonContext, setTutorLessonContext] = useState<Lesson | null>(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(Boolean(document.fullscreenElement));
+    };
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
+  }, []);
+
+  const toggleFullscreen = () => {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen().catch(() => {});
+    } else {
+      if (document.exitFullscreen) {
+        document.exitFullscreen().catch(() => {});
+      }
+    }
+  };
 
   // Synced Data State
   const [progressMap, setProgressMap] = useState<Record<string, LessonProgress>>({});
@@ -1317,12 +1338,24 @@ export default function App() {
               {t.common.switchLang}
             </button>
             <button
-              onClick={() => setTheme((th) => (th === 'dark' ? 'light' : 'dark'))}
-              className="p-2 rounded-xl glass-btn-secondary cursor-pointer"
-              aria-label="Theme toggle"
-            >
-              {theme === 'dark' ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4 text-slate-700" />}
-            </button>
+    onClick={toggleFullscreen}
+    className="p-2 rounded-xl glass-btn-secondary cursor-pointer"
+    title={lang === 'ar' ? 'ملء الشاشة' : 'Toggle Fullscreen'}
+    aria-label="Toggle Fullscreen"
+  >
+    {isFullscreen ? (
+      <Minimize2 className="w-4 h-4 text-blue-600 dark:text-cyan-400" />
+    ) : (
+      <Maximize2 className="w-4 h-4 text-blue-600 dark:text-cyan-400" />
+    )}
+  </button>
+  <button
+    onClick={() => setTheme((th) => (th === 'dark' ? 'light' : 'dark'))}
+    className="p-2 rounded-xl glass-btn-secondary cursor-pointer"
+    aria-label="Theme toggle"
+  >
+    {theme === 'dark' ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4 text-slate-700" />}
+  </button>
           </div>
         </header>
 
