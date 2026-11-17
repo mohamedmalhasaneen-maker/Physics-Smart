@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { Suspense, useCallback, useEffect, useState } from 'react';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import {
   collection,
@@ -59,20 +59,62 @@ import { FORMULAS_SEED } from './data/formulasSeed';
 import { CHALLENGES_SEED, EXAMS_SEED, QUESTIONS_SEED } from './data/questionsSeed';
 import { LAB_EXPERIMENTS } from './data/labsSeed';
 import { AuthOnboarding } from './components/AuthOnboarding';
-import { DashboardView } from './components/DashboardView';
-import { CurriculumView } from './components/CurriculumView';
-import { TutorView } from './components/TutorView';
-import { SolverView } from './components/SolverView';
-import { VirtualLabView } from './components/VirtualLabView';
-import { QuestionBankView } from './components/QuestionBankView';
-import { ExamsView } from './components/ExamsView';
-import { FormulaLibraryView } from './components/FormulaLibraryView';
-import { GraphingToolView } from './components/GraphingToolView';
-import { ChallengesView } from './components/ChallengesView';
-import { StudyPlannerView } from './components/StudyPlannerView';
-import { AnalyticsView } from './components/AnalyticsView';
-import { AdminDashboardView } from './components/AdminDashboardView';
 import { PhysicsAmbientBg } from './components/PhysicsAmbientBg';
+import { ErrorBoundary } from './components/ErrorBoundary';
+import { OfflineStatusBar } from './components/OfflineStatusBar';
+import { OfflineCenterModal } from './components/OfflineCenterModal';
+import { useOnlineStatus, useSWUpdates } from './hooks/usePWA';
+import {
+  ActiveExamSnapshot,
+  DownloadPackRecord,
+  FavoriteRecord,
+  StudyNoteRecord,
+  SyncQueueItem,
+  deleteOfflineGraph,
+  deleteOfflineTask,
+  deleteOfflineTutorSession,
+  getActiveExamSnapshot,
+  getAllDownloadPacks,
+  getContentCollection,
+  getOfflineAttempts,
+  getOfflineFavorites,
+  getOfflineGraphs,
+  getOfflineNotes,
+  getOfflineProgressMap,
+  getOfflineSessionProfile,
+  getOfflineTasks,
+  getOfflineTutorSessions,
+  getSyncQueueItems,
+  getUiPreferences,
+  mergeProgressConflict,
+  saveActiveExamSnapshot,
+  saveContentCollection,
+  saveFormulasCache,
+  saveOfflineAttempt,
+  saveOfflineAttempts,
+  saveOfflineGraph,
+  saveOfflineGraphs,
+  saveOfflineNote,
+  saveOfflineProgressItem,
+  saveOfflineProgressMap,
+  saveOfflineSessionProfile,
+  saveOfflineTask,
+  saveOfflineTasks,
+  saveOfflineTutorSession,
+  saveOfflineTutorSessions,
+  saveUiPreferences,
+  toggleFavoriteItem,
+} from './lib/offlineDb';
+import {
+  SyncStatusSnapshot,
+  enqueueSyncMutation,
+  flushSyncQueue,
+  getSyncStatusSnapshot,
+  isBrowserOffline,
+  refreshPendingSyncCount,
+  setOnlineSyncIndicator,
+  subscribeSyncStatus,
+} from './lib/offlineSync';
 import {
   Atom,
   BarChart3,
@@ -80,10 +122,9 @@ import {
   Bot,
   Calculator,
   CalendarClock,
-  ClipboardCheck,
   FlaskConical,
   Globe,
-  HelpCircle,
+  HardDrive,
   LayoutDashboard,
   LineChart,
   LogOut,
@@ -92,12 +133,52 @@ import {
   Minimize2,
   Moon,
   Settings2,
-  Shield,
   Sigma,
   Sun,
   Trophy,
   X,
 } from 'lucide-react';
+
+// Code-split heavy views for rapid offline shell startup & minimal initial JS payload
+const DashboardView = React.lazy(() =>
+  import('./components/DashboardView').then((m) => ({ default: m.DashboardView }))
+);
+const CurriculumView = React.lazy(() =>
+  import('./components/CurriculumView').then((m) => ({ default: m.CurriculumView }))
+);
+const TutorView = React.lazy(() =>
+  import('./components/TutorView').then((m) => ({ default: m.TutorView }))
+);
+const SolverView = React.lazy(() =>
+  import('./components/SolverView').then((m) => ({ default: m.SolverView }))
+);
+const VirtualLabView = React.lazy(() =>
+  import('./components/VirtualLabView').then((m) => ({ default: m.VirtualLabView }))
+);
+const QuestionBankView = React.lazy(() =>
+  import('./components/QuestionBankView').then((m) => ({ default: m.QuestionBankView }))
+);
+const ExamsView = React.lazy(() =>
+  import('./components/ExamsView').then((m) => ({ default: m.ExamsView }))
+);
+const FormulaLibraryView = React.lazy(() =>
+  import('./components/FormulaLibraryView').then((m) => ({ default: m.FormulaLibraryView }))
+);
+const GraphingToolView = React.lazy(() =>
+  import('./components/GraphingToolView').then((m) => ({ default: m.GraphingToolView }))
+);
+const ChallengesView = React.lazy(() =>
+  import('./components/ChallengesView').then((m) => ({ default: m.ChallengesView }))
+);
+const StudyPlannerView = React.lazy(() =>
+  import('./components/StudyPlannerView').then((m) => ({ default: m.StudyPlannerView }))
+);
+const AnalyticsView = React.lazy(() =>
+  import('./components/AnalyticsView').then((m) => ({ default: m.AnalyticsView }))
+);
+const AdminDashboardView = React.lazy(() =>
+  import('./components/AdminDashboardView').then((m) => ({ default: m.AdminDashboardView }))
+);
 
 export default function App() {
   const [lang, setLang] = useState<Language>('ar');
@@ -119,6 +200,18 @@ export default function App() {
   const [tutorLessonContext, setTutorLessonContext] = useState<Lesson | null>(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+
+  // Offline-first PWA State
+  const isOnline = useOnlineStatus();
+  const [isExamActive, setIsExamActive] = useState(false);
+  const swUpdates = useSWUpdates({ deferReload: isExamActive });
+  const [syncStatus, setSyncStatus] = useState<SyncStatusSnapshot>(getSyncStatusSnapshot);
+  const [downloadPacks, setDownloadPacks] = useState<DownloadPackRecord[]>([]);
+  const [favorites, setFavorites] = useState<FavoriteRecord[]>([]);
+  const [notes, setNotes] = useState<StudyNoteRecord[]>([]);
+  const [activeExamSnapshot, setActiveExamSnapshot] = useState<ActiveExamSnapshot | null>(null);
+  const [offlineCenterOpen, setOfflineCenterOpen] = useState(false);
+  const [offlineCenterTab, setOfflineCenterTab] = useState<'downloads' | 'storage' | 'saved'>('downloads');
 
   useEffect(() => {
     const handleFullscreenChange = () => {
@@ -163,6 +256,69 @@ export default function App() {
     },
   ]);
 
+  // Hydrate UI preferences, downloaded packs & offline educational collections on mount
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      const [prefs, packs, cachedLessons, cachedQuestions, cachedExams, cachedLabs, cachedAnn] =
+        await Promise.all([
+          getUiPreferences(),
+          getAllDownloadPacks(),
+          getContentCollection('lessons'),
+          getContentCollection('questions'),
+          getContentCollection('exams'),
+          getContentCollection('labs'),
+          getContentCollection('announcements'),
+        ]);
+      if (!mounted) return;
+      if (prefs?.lang) setLang(prefs.lang);
+      if (prefs?.theme) setTheme(prefs.theme);
+      setDownloadPacks(packs);
+      if (cachedLessons?.length) {
+        const seedIds = new Set(CURRICULUM_SEED.map((l) => l.id));
+        const overrides = cachedLessons.filter((l) => !seedIds.has(l.id));
+        if (overrides.length > 0) setAdminLessons(overrides);
+      }
+      if (cachedQuestions?.length) {
+        const seedIds = new Set(QUESTIONS_SEED.map((q) => q.id));
+        const overrides = cachedQuestions.filter((q) => !seedIds.has(q.id));
+        if (overrides.length > 0) setAdminQuestions(overrides);
+      }
+      if (cachedExams?.length) {
+        const seedIds = new Set(EXAMS_SEED.map((e) => e.id));
+        const overrides = cachedExams.filter((e) => !seedIds.has(e.id));
+        if (overrides.length > 0) setAdminExams(overrides);
+      }
+      if (cachedLabs?.length) {
+        const seedIds = new Set(LAB_EXPERIMENTS.map((l) => l.id));
+        const overrides = cachedLabs.filter((l) => !seedIds.has(l.id));
+        if (overrides.length > 0) setAdminLabs(overrides);
+      }
+      if (cachedAnn?.length) {
+        setAnnouncements(cachedAnn);
+      }
+      saveFormulasCache(FORMULAS_SEED).catch(() => {});
+    })();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  // Persist UI preferences locally
+  useEffect(() => {
+    saveUiPreferences({ lang, theme, activeSection }).catch(() => {});
+  }, [lang, theme, activeSection]);
+
+  // Subscribe to offline sync queue status
+  useEffect(() => {
+    const unsub = subscribeSyncStatus(setSyncStatus);
+    return () => unsub();
+  }, []);
+
+  useEffect(() => {
+    setOnlineSyncIndicator(isOnline);
+  }, [isOnline]);
+
   // Sync HTML dir/lang/theme & Firebase Auth localization
   useEffect(() => {
     const root = document.documentElement;
@@ -193,9 +349,43 @@ export default function App() {
     return (candidate.length >= 3 ? candidate : `${user.uid}@google.user`).slice(0, 200);
   };
 
+  const hydrateUserOfflineData = useCallback(async (uid: string) => {
+    const [
+      cachedProgress,
+      cachedTasks,
+      cachedAttempts,
+      cachedSessions,
+      cachedGraphs,
+      cachedFavs,
+      cachedNotes,
+      cachedSnapshot,
+    ] = await Promise.all([
+      getOfflineProgressMap(uid),
+      getOfflineTasks(uid),
+      getOfflineAttempts(uid),
+      getOfflineTutorSessions(uid),
+      getOfflineGraphs(uid),
+      getOfflineFavorites(uid),
+      getOfflineNotes(uid),
+      getActiveExamSnapshot(uid),
+    ]);
+
+    setProgressMap(cachedProgress);
+    setStudyTasks(cachedTasks);
+    setExamAttempts(cachedAttempts);
+    setTutorSessions(cachedSessions);
+    setSavedGraphs(cachedGraphs);
+    setFavorites(cachedFavs);
+    setNotes(cachedNotes);
+    setActiveExamSnapshot(cachedSnapshot);
+    await refreshPendingSyncCount(uid);
+  }, []);
+
   // Initial Firestore connection test + Google redirect completion + Auth listener
   useEffect(() => {
-    testFirestoreConnection();
+    if (navigator.onLine) {
+      testFirestoreConnection();
+    }
     const handleOnline = () => {
       testFirestoreConnection();
     };
@@ -236,6 +426,9 @@ export default function App() {
         setExamAttempts([]);
         setTutorSessions([]);
         setSavedGraphs([]);
+        setFavorites([]);
+        setNotes([]);
+        setActiveExamSnapshot(null);
         setAdminStudents([]);
         setShowTrackSwitcher(false);
         setSelectedLessonId(null);
@@ -269,6 +462,26 @@ export default function App() {
         badges: [],
       };
 
+      // Immediately hydrate cached profile & offline study data for instant offline launch
+      const cachedProfile = await getOfflineSessionProfile();
+      const hasValidCachedProfile = Boolean(cachedProfile && cachedProfile.uid === user.uid);
+      if (hasValidCachedProfile && cachedProfile) {
+        setProfile(cachedProfile);
+        if (cachedProfile.preferredLang) setLang(cachedProfile.preferredLang);
+        await hydrateUserOfflineData(user.uid);
+        setAuthReady(true);
+      }
+
+      // If browser is offline right now, never block waiting for Firestore server timeouts
+      if (typeof navigator !== 'undefined' && isBrowserOffline()) {
+        if (!hasValidCachedProfile) {
+          setProfile(fallbackProfile);
+          await hydrateUserOfflineData(user.uid);
+        }
+        setAuthReady(true);
+        return;
+      }
+
       try {
         const userRef = doc(db, 'users', user.uid);
         let snap;
@@ -277,7 +490,7 @@ export default function App() {
           snap = await getDoc(userRef);
         } catch (err) {
           if (isFirestoreOfflineError(err)) {
-            await new Promise((r) => setTimeout(r, 1000));
+            await new Promise((r) => setTimeout(r, 800));
             try {
               snap = await getDoc(userRef);
             } catch (retryErr) {
@@ -302,7 +515,11 @@ export default function App() {
             role: resolvedRole,
           };
           setProfile(resolvedProfile);
+          saveOfflineSessionProfile(resolvedProfile).catch(() => {});
           if (data.preferredLang) setLang(data.preferredLang);
+          if (!hasValidCachedProfile) {
+            await hydrateUserOfflineData(user.uid);
+          }
 
           // Sync identity updates (without overwriting existing track, grade, points, level, badges, or createdAt)
           const needsIdentitySync =
@@ -330,12 +547,20 @@ export default function App() {
           }
         } else if (snap && !snap.exists()) {
           // First-time sign-in (e.g., Google OAuth): immediately unblock UI and sync profile cleanly
-          setProfile(fallbackProfile);
+          const initialProfile =
+            hasValidCachedProfile && cachedProfile && cachedProfile.track !== 'unset'
+              ? cachedProfile
+              : fallbackProfile;
+          setProfile(initialProfile);
+          saveOfflineSessionProfile(initialProfile).catch(() => {});
+          if (!hasValidCachedProfile) {
+            await hydrateUserOfflineData(user.uid);
+          }
           try {
             await setDoc(
               userRef,
               {
-                ...fallbackProfile,
+                ...initialProfile,
                 createdAt: serverTimestamp(),
                 updatedAt: serverTimestamp(),
               },
@@ -351,13 +576,17 @@ export default function App() {
             );
           }
         } else {
-          // Auth succeeded while Firestore read was unreachable/offline; allow user to continue without blocking Auth
-          setProfile(fallbackProfile);
-          if (readFailed) {
+          // Auth succeeded while Firestore read was unreachable/offline; preserve cached track & profile!
+          const safeOfflineProfile = hasValidCachedProfile && cachedProfile ? cachedProfile : fallbackProfile;
+          setProfile(safeOfflineProfile);
+          if (!hasValidCachedProfile) {
+            await hydrateUserOfflineData(user.uid);
+          }
+          if (readFailed && !hasValidCachedProfile) {
             setProfileSyncWarning(
               lang === 'ar'
-                ? 'تم تسجيل الدخول بنجاح. يتم العمل مؤقتًا حتى تستقر المزامنة السحابية لملفك الشخصي.'
-                : 'Signed in successfully. Cloud profile sync will automatically resume once connected.'
+                ? 'تم تسجيل دخولك بنجاح. يتم العمل بالذاكرة المحلية حتى تستقر المزامنة السحابية.'
+                : 'Signed in successfully. Working offline from local storage until cloud sync resumes.'
             );
           }
         }
@@ -372,14 +601,230 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Real-time Firestore listeners once signed in
+  // Conflict-safe Sync Executor for queued offline student mutations
+  const executeSyncItem = useCallback(
+    async (uid: string, item: SyncQueueItem) => {
+      switch (item.entityType) {
+        case 'profilePatch': {
+          const userRef = doc(db, 'users', uid);
+          const snap = await getDoc(userRef);
+          if (snap.exists()) {
+            await updateDoc(userRef, {
+              ...item.payload,
+              updatedAt: serverTimestamp(),
+            });
+          } else {
+            await setDoc(
+              userRef,
+              {
+                ...(profile || {
+                  uid,
+                  displayName: firebaseUser?.displayName || 'Student',
+                  email: firebaseUser?.email || `${uid}@user`,
+                  photoURL: '',
+                  track: 'thanawiya',
+                  grade: 'grade3',
+                  preferredLang: lang,
+                  role: 'student',
+                  points: 0,
+                  level: 1,
+                  badges: [],
+                }),
+                ...item.payload,
+                createdAt: serverTimestamp(),
+                updatedAt: serverTimestamp(),
+              },
+              { merge: true }
+            );
+          }
+          break;
+        }
+        case 'pointsAward': {
+          const userRef = doc(db, 'users', uid);
+          const snap = await getDoc(userRef);
+          if (!snap.exists()) return;
+          const serverData = snap.data() as UserProfile;
+          const nextPoints = Number(serverData.points || 0) + Number(item.payload?.addPoints || 0);
+          const nextLevel = Math.max(1, Math.floor(nextPoints / 150) + 1);
+          const addedBadges: string[] = Array.isArray(item.payload?.badges)
+            ? item.payload.badges
+            : item.payload?.badgeName
+            ? [String(item.payload.badgeName)]
+            : [];
+          const nextBadges = Array.from(new Set([...(serverData.badges || []), ...addedBadges])).slice(0, 30);
+
+          await updateDoc(userRef, {
+            points: nextPoints,
+            level: nextLevel,
+            badges: nextBadges,
+            updatedAt: serverTimestamp(),
+          });
+
+          const lbRef = doc(db, 'leaderboardPublic', uid);
+          await setDoc(lbRef, {
+            uid,
+            displayName: serverData.displayName || profile?.displayName || 'Student',
+            track: serverData.track || profile?.track || 'thanawiya',
+            grade: serverData.grade || profile?.grade || 'grade3',
+            points: nextPoints,
+            accuracy: 100,
+            level: nextLevel,
+            updatedAt: serverTimestamp(),
+          });
+          break;
+        }
+        case 'progress': {
+          const ref = doc(db, 'users', uid, 'progress', item.entityId);
+          const snap = await getDoc(ref);
+          const p = item.payload as LessonProgress;
+          if (snap.exists()) {
+            const merged = mergeProgressConflict(p, snap.data() as LessonProgress)!;
+            await updateDoc(ref, {
+              completedParts: merged.completedParts,
+              isCompleted: merged.isCompleted,
+              quizScore: merged.quizScore,
+              studyMinutes: merged.studyMinutes,
+              lastAccessedAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            });
+          } else {
+            await setDoc(ref, {
+              userId: uid,
+              lessonId: p.lessonId,
+              track: p.track,
+              completedParts: p.completedParts,
+              isCompleted: p.isCompleted,
+              quizScore: p.quizScore,
+              studyMinutes: p.studyMinutes,
+              lastAccessedAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            });
+          }
+          break;
+        }
+        case 'studyTask': {
+          const ref = doc(db, 'users', uid, 'studyTasks', item.entityId);
+          if (item.op === 'delete') {
+            await deleteDoc(ref);
+          } else {
+            const task = item.payload as StudyTask;
+            const snap = await getDoc(ref);
+            if (snap.exists()) {
+              await updateDoc(ref, {
+                title: task.title,
+                lessonId: task.lessonId || '',
+                scheduledDate: task.scheduledDate,
+                durationMinutes: task.durationMinutes,
+                taskType: task.taskType,
+                completed: task.completed,
+                updatedAt: serverTimestamp(),
+              });
+            } else {
+              await setDoc(ref, {
+                ...task,
+                lessonId: task.lessonId || '',
+                createdAt: serverTimestamp(),
+                updatedAt: serverTimestamp(),
+              });
+            }
+          }
+          break;
+        }
+        case 'examAttempt': {
+          const ref = doc(db, 'users', uid, 'examAttempts', item.entityId);
+          const attempt = item.payload as ExamAttempt;
+          const snap = await getDoc(ref);
+          if (!snap.exists()) {
+            await setDoc(ref, {
+              ...attempt,
+              startedAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            });
+          } else if (snap.data()?.status === 'in_progress') {
+            await updateDoc(ref, {
+              status: attempt.status,
+              score: attempt.score,
+              answersJson: attempt.answersJson || '{}',
+              updatedAt: serverTimestamp(),
+            });
+          }
+          break;
+        }
+        case 'tutorSession': {
+          const ref = doc(db, 'users', uid, 'tutorSessions', item.entityId);
+          if (item.op === 'delete') {
+            await deleteDoc(ref);
+          } else {
+            const session = item.payload as TutorSession;
+            const snap = await getDoc(ref);
+            if (snap.exists()) {
+              await updateDoc(ref, {
+                title: session.title,
+                mode: session.mode,
+                messagesJson: session.messagesJson,
+                updatedAt: serverTimestamp(),
+              });
+            } else {
+              await setDoc(ref, {
+                ...session,
+                createdAt: serverTimestamp(),
+                updatedAt: serverTimestamp(),
+              });
+            }
+          }
+          break;
+        }
+        case 'savedGraph': {
+          const ref = doc(db, 'users', uid, 'graphs', item.entityId);
+          if (item.op === 'delete') {
+            await deleteDoc(ref);
+          } else {
+            const graph = item.payload as SavedGraph;
+            const snap = await getDoc(ref);
+            if (snap.exists()) {
+              await updateDoc(ref, {
+                title: graph.title,
+                graphType: graph.graphType,
+                xLabel: graph.xLabel,
+                yLabel: graph.yLabel,
+                pointsJson: graph.pointsJson,
+                updatedAt: serverTimestamp(),
+              });
+            } else {
+              await setDoc(ref, {
+                ...graph,
+                createdAt: serverTimestamp(),
+                updatedAt: serverTimestamp(),
+              });
+            }
+          }
+          break;
+        }
+      }
+    },
+    [firebaseUser, lang, profile]
+  );
+
+  const handleTriggerSync = useCallback(async () => {
+    if (!firebaseUser || !isOnline) return;
+    await flushSyncQueue(firebaseUser.uid, (item) => executeSyncItem(firebaseUser.uid, item));
+  }, [firebaseUser, isOnline, executeSyncItem]);
+
+  // Auto-flush offline sync queue upon returning online
   useEffect(() => {
-    if (!firebaseUser || !profile) return;
+    if (isOnline && firebaseUser && profile && profile.track !== 'unset') {
+      handleTriggerSync().catch(() => {});
+    }
+  }, [isOnline, firebaseUser, profile?.uid, profile?.track, handleTriggerSync]);
+
+  // Real-time Firestore listeners once signed in & online
+  useEffect(() => {
+    if (!firebaseUser || !profile || !isOnline) return;
 
     const uid = firebaseUser.uid;
     const unsubs: Array<() => void> = [];
     const handleListenerError = (err: unknown, op: OperationType, path: string) => {
-      if (isFirestoreOfflineError(err)) {
+      if (isFirestoreOfflineError(err) || isBrowserOffline()) {
         console.warn(`Firestore listener paused while offline (${path})`);
         return;
       }
@@ -394,24 +839,38 @@ export default function App() {
           if (snap.exists()) {
             const d = snap.data() as UserProfile;
             const isBootstrapAdmin = firebaseUser.email === ADMIN_BOOTSTRAP_EMAIL && firebaseUser.emailVerified;
-            setProfile({ ...d, role: isBootstrapAdmin ? 'admin' : d.role });
+            const nextProf = { ...d, role: isBootstrapAdmin ? 'admin' : d.role };
+            setProfile(nextProf);
+            saveOfflineSessionProfile(nextProf).catch(() => {});
           }
         },
         (err) => handleListenerError(err, OperationType.GET, `users/${uid}`)
       )
     );
 
-    // 2. Progress subcollection
+    // 2. Progress subcollection (merges conflict-safely with local unsynced progress)
     const progQ = query(collection(db, 'users', uid, 'progress'), where('userId', '==', uid));
     unsubs.push(
       onSnapshot(
         progQ,
-        (snap) => {
-          const map: Record<string, LessonProgress> = {};
+        async (snap) => {
+          const pending = await getSyncQueueItems(uid);
+          const pendingMap = new Map<string, LessonProgress>();
+          for (const qItem of pending) {
+            if (qItem.entityType === 'progress' && qItem.op === 'upsert') {
+              pendingMap.set(qItem.entityId, qItem.payload as LessonProgress);
+            }
+          }
+          const nextMap: Record<string, LessonProgress> = {};
           snap.docs.forEach((d) => {
-            map[d.id] = d.data() as LessonProgress;
+            const remoteItem = d.data() as LessonProgress;
+            nextMap[d.id] = mergeProgressConflict(pendingMap.get(d.id), remoteItem) || remoteItem;
           });
-          setProgressMap(map);
+          pendingMap.forEach((localPending, id) => {
+            if (!nextMap[id]) nextMap[id] = localPending;
+          });
+          setProgressMap(nextMap);
+          saveOfflineProgressMap(uid, nextMap).catch(() => {});
         },
         (err) => handleListenerError(err, OperationType.LIST, `users/${uid}/progress`)
       )
@@ -422,8 +881,24 @@ export default function App() {
     unsubs.push(
       onSnapshot(
         tasksQ,
-        (snap) => {
-          setStudyTasks(snap.docs.map((d) => d.data() as StudyTask));
+        async (snap) => {
+          const pending = await getSyncQueueItems(uid);
+          const deletedIds = new Set(
+            pending.filter((i) => i.entityType === 'studyTask' && i.op === 'delete').map((i) => i.entityId)
+          );
+          const pendingUpserts = new Map(
+            pending
+              .filter((i) => i.entityType === 'studyTask' && i.op === 'upsert')
+              .map((i) => [i.entityId, i.payload as StudyTask])
+          );
+          const merged = new Map<string, StudyTask>();
+          snap.docs.forEach((d) => {
+            if (!deletedIds.has(d.id)) merged.set(d.id, d.data() as StudyTask);
+          });
+          pendingUpserts.forEach((val, id) => merged.set(id, val));
+          const list = Array.from(merged.values());
+          setStudyTasks(list);
+          saveOfflineTasks(uid, list).catch(() => {});
         },
         (err) => handleListenerError(err, OperationType.LIST, `users/${uid}/studyTasks`)
       )
@@ -434,10 +909,20 @@ export default function App() {
     unsubs.push(
       onSnapshot(
         attemptsQ,
-        (snap) => {
-          const list = snap.docs.map((d) => d.data() as ExamAttempt);
+        async (snap) => {
+          const pending = await getSyncQueueItems(uid);
+          const pendingAttempts = new Map(
+            pending
+              .filter((i) => i.entityType === 'examAttempt')
+              .map((i) => [i.entityId, i.payload as ExamAttempt])
+          );
+          const merged = new Map<string, ExamAttempt>();
+          snap.docs.forEach((d) => merged.set(d.id, d.data() as ExamAttempt));
+          pendingAttempts.forEach((val, id) => merged.set(id, val));
+          const list = Array.from(merged.values());
           list.sort((a, b) => (b.updatedAt?.seconds || 0) - (a.updatedAt?.seconds || 0));
           setExamAttempts(list);
+          saveOfflineAttempts(uid, list).catch(() => {});
         },
         (err) => handleListenerError(err, OperationType.LIST, `users/${uid}/examAttempts`)
       )
@@ -448,10 +933,25 @@ export default function App() {
     unsubs.push(
       onSnapshot(
         sessionsQ,
-        (snap) => {
-          const list = snap.docs.map((d) => d.data() as TutorSession);
+        async (snap) => {
+          const pending = await getSyncQueueItems(uid);
+          const deletedIds = new Set(
+            pending.filter((i) => i.entityType === 'tutorSession' && i.op === 'delete').map((i) => i.entityId)
+          );
+          const pendingUpserts = new Map(
+            pending
+              .filter((i) => i.entityType === 'tutorSession' && i.op === 'upsert')
+              .map((i) => [i.entityId, i.payload as TutorSession])
+          );
+          const merged = new Map<string, TutorSession>();
+          snap.docs.forEach((d) => {
+            if (!deletedIds.has(d.id)) merged.set(d.id, d.data() as TutorSession);
+          });
+          pendingUpserts.forEach((val, id) => merged.set(id, val));
+          const list = Array.from(merged.values());
           list.sort((a, b) => (b.updatedAt?.seconds || 0) - (a.updatedAt?.seconds || 0));
           setTutorSessions(list);
+          saveOfflineTutorSessions(uid, list).catch(() => {});
         },
         (err) => handleListenerError(err, OperationType.LIST, `users/${uid}/tutorSessions`)
       )
@@ -462,8 +962,24 @@ export default function App() {
     unsubs.push(
       onSnapshot(
         graphsQ,
-        (snap) => {
-          setSavedGraphs(snap.docs.map((d) => d.data() as SavedGraph));
+        async (snap) => {
+          const pending = await getSyncQueueItems(uid);
+          const deletedIds = new Set(
+            pending.filter((i) => i.entityType === 'savedGraph' && i.op === 'delete').map((i) => i.entityId)
+          );
+          const pendingUpserts = new Map(
+            pending
+              .filter((i) => i.entityType === 'savedGraph' && i.op === 'upsert')
+              .map((i) => [i.entityId, i.payload as SavedGraph])
+          );
+          const merged = new Map<string, SavedGraph>();
+          snap.docs.forEach((d) => {
+            if (!deletedIds.has(d.id)) merged.set(d.id, d.data() as SavedGraph);
+          });
+          pendingUpserts.forEach((val, id) => merged.set(id, val));
+          const list = Array.from(merged.values());
+          setSavedGraphs(list);
+          saveOfflineGraphs(uid, list).catch(() => {});
         },
         (err) => handleListenerError(err, OperationType.LIST, `users/${uid}/graphs`)
       )
@@ -588,7 +1104,10 @@ export default function App() {
               // ignore
             }
           });
-          if (list.length > 0) setAnnouncements(list);
+          if (list.length > 0) {
+            setAnnouncements(list);
+            saveContentCollection('announcements', list).catch(() => {});
+          }
         },
         (err) => handleListenerError(err, OperationType.LIST, 'platformSettings')
       )
@@ -608,9 +1127,9 @@ export default function App() {
     }
 
     return () => unsubs.forEach((u) => u());
-  }, [firebaseUser, profile?.uid, profile?.role]);
+  }, [firebaseUser, profile?.uid, profile?.role, isOnline]);
 
-  // Merged Content (Seed + Admin Firestore overrides)
+  // Merged Content (Seed + Admin Firestore overrides) & auto-cache locally
   const mergedLessons = React.useMemo(() => {
     const map = new Map<string, Lesson>();
     CURRICULUM_SEED.forEach((l) => map.set(l.id, l));
@@ -638,6 +1157,22 @@ export default function App() {
     adminLabs.forEach((l) => map.set(l.id, l));
     return Array.from(map.values());
   }, [adminLabs]);
+
+  useEffect(() => {
+    saveContentCollection('lessons', mergedLessons).catch(() => {});
+  }, [mergedLessons]);
+
+  useEffect(() => {
+    saveContentCollection('questions', mergedQuestions).catch(() => {});
+  }, [mergedQuestions]);
+
+  useEffect(() => {
+    saveContentCollection('exams', mergedExams).catch(() => {});
+  }, [mergedExams]);
+
+  useEffect(() => {
+    saveContentCollection('labs', mergedLabs).catch(() => {});
+  }, [mergedLabs]);
 
   // Email/Password Registration with Atomic Firestore Profile Creation
   const handleEmailSignUp = async (input: {
@@ -678,10 +1213,12 @@ export default function App() {
         const existingSnap = await getDoc(userRef);
         if (existingSnap.exists()) {
           const existingData = existingSnap.data() as UserProfile;
-          setProfile({
+          const resolved = {
             ...existingData,
             role: isBootstrapAdmin ? 'admin' : existingData.role,
-          });
+          };
+          setProfile(resolved);
+          saveOfflineSessionProfile(resolved).catch(() => {});
         } else {
           await setDoc(userRef, {
             ...newProfile,
@@ -689,6 +1226,7 @@ export default function App() {
             updatedAt: serverTimestamp(),
           });
           setProfile(newProfile);
+          saveOfflineSessionProfile(newProfile).catch(() => {});
         }
       } catch (err) {
         handleFirestoreError(err, OperationType.CREATE, `users/${cred.user.uid}`);
@@ -700,7 +1238,7 @@ export default function App() {
     }
   };
 
-  // Mutations with mandatory handleFirestoreError
+  // Offline-first & Conflict-safe Student Mutations
   const handleSaveTrackSelection = async (
     track: TrackId,
     grade: string,
@@ -712,65 +1250,91 @@ export default function App() {
     const trimmedName = displayName?.trim().slice(0, 120);
     const resolvedStudyLang: StudyLanguage =
       selectedStudyLang || (track === 'american' ? profile?.studyLang || 'bilingual' : lang);
-    const updatePayload: Record<string, any> = {
-      track,
-      grade,
-      preferredLang: lang,
-      studyLang: resolvedStudyLang,
-      updatedAt: serverTimestamp(),
-    };
-    if (trimmedName) {
-      updatePayload.displayName = trimmedName;
-      updateProfile(firebaseUser, { displayName: trimmedName }).catch(() => {});
-    }
-    try {
-      const snap = await getDoc(ref);
-      if (snap.exists()) {
-        await setDoc(ref, updatePayload, { merge: true });
-        setProfile((prev) =>
-          prev
-            ? {
-                ...prev,
-                track,
-                grade,
-                preferredLang: lang,
-                studyLang: resolvedStudyLang,
-                ...(trimmedName ? { displayName: trimmedName } : {}),
-              }
-            : prev
-        );
-      } else {
-        const isBootstrapAdmin = firebaseUser.email === ADMIN_BOOTSTRAP_EMAIL && firebaseUser.emailVerified;
-        const safeEmail = sanitizeEmail(firebaseUser);
-        const createdProfile: UserProfile = {
+
+    const optimisticProfile: UserProfile = profile
+      ? {
+          ...profile,
+          track,
+          grade,
+          preferredLang: lang,
+          studyLang: resolvedStudyLang,
+          ...(trimmedName ? { displayName: trimmedName } : {}),
+        }
+      : {
           uid: firebaseUser.uid,
-          displayName: trimmedName || sanitizeDisplayName(firebaseUser.displayName, safeEmail),
-          email: safeEmail,
+          displayName: trimmedName || sanitizeDisplayName(firebaseUser.displayName, firebaseUser.email),
+          email: sanitizeEmail(firebaseUser),
           photoURL: sanitizePhotoUrl(firebaseUser.photoURL),
           track,
           grade,
           preferredLang: lang,
           studyLang: resolvedStudyLang,
-          role: isBootstrapAdmin ? 'admin' : 'student',
+          role:
+            firebaseUser.email === ADMIN_BOOTSTRAP_EMAIL && firebaseUser.emailVerified
+              ? 'admin'
+              : 'student',
           points: 0,
           level: 1,
           badges: [],
         };
+
+    setProfile(optimisticProfile);
+    await saveOfflineSessionProfile(optimisticProfile);
+    setShowTrackSwitcher(false);
+
+    const patchPayload: Record<string, any> = {
+      track,
+      grade,
+      preferredLang: lang,
+      studyLang: resolvedStudyLang,
+    };
+    if (trimmedName) {
+      patchPayload.displayName = trimmedName;
+      updateProfile(firebaseUser, { displayName: trimmedName }).catch(() => {});
+    }
+
+    if (isBrowserOffline()) {
+      await enqueueSyncMutation({
+        uid: firebaseUser.uid,
+        entityType: 'profilePatch',
+        entityId: firebaseUser.uid,
+        op: 'upsert',
+        payload: patchPayload,
+      });
+      return;
+    }
+
+    try {
+      const snap = await getDoc(ref);
+      if (snap.exists()) {
+        await updateDoc(ref, {
+          ...patchPayload,
+          updatedAt: serverTimestamp(),
+        });
+      } else {
         await setDoc(
           ref,
           {
-            ...createdProfile,
+            ...optimisticProfile,
             createdAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
           },
           { merge: true }
         );
-        setProfile(createdProfile);
       }
       setProfileSyncWarning(null);
-      setShowTrackSwitcher(false);
     } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `users/${firebaseUser.uid}`);
+      if (isFirestoreOfflineError(err) || isBrowserOffline()) {
+        await enqueueSyncMutation({
+          uid: firebaseUser.uid,
+          entityType: 'profilePatch',
+          entityId: firebaseUser.uid,
+          op: 'upsert',
+          payload: patchPayload,
+        });
+      } else {
+        handleFirestoreError(err, OperationType.UPDATE, `users/${firebaseUser.uid}`);
+      }
     }
   };
 
@@ -778,6 +1342,19 @@ export default function App() {
     const next: Language = lang === 'ar' ? 'en' : 'ar';
     setLang(next);
     if (firebaseUser && profile) {
+      const nextProf = { ...profile, preferredLang: next };
+      setProfile(nextProf);
+      saveOfflineSessionProfile(nextProf).catch(() => {});
+      if (isBrowserOffline()) {
+        await enqueueSyncMutation({
+          uid: firebaseUser.uid,
+          entityType: 'profilePatch',
+          entityId: firebaseUser.uid,
+          op: 'upsert',
+          payload: { preferredLang: next },
+        });
+        return;
+      }
       try {
         await updateDoc(doc(db, 'users', firebaseUser.uid), {
           preferredLang: next,
@@ -791,47 +1368,39 @@ export default function App() {
 
   const handleChangeStudyLang = async (next: StudyLanguage) => {
     if (profile) {
-      setProfile({ ...profile, studyLang: next });
+      const nextProf = { ...profile, studyLang: next };
+      setProfile(nextProf);
+      saveOfflineSessionProfile(nextProf).catch(() => {});
     }
     if (firebaseUser && profile) {
+      if (isBrowserOffline()) {
+        await enqueueSyncMutation({
+          uid: firebaseUser.uid,
+          entityType: 'profilePatch',
+          entityId: firebaseUser.uid,
+          op: 'upsert',
+          payload: { studyLang: next },
+        });
+        return;
+      }
       try {
         await updateDoc(doc(db, 'users', firebaseUser.uid), {
           studyLang: next,
           updatedAt: serverTimestamp(),
         });
       } catch (err) {
-        handleFirestoreError(err, OperationType.UPDATE, `users/${firebaseUser.uid}`);
+        if (isFirestoreOfflineError(err) || isBrowserOffline()) {
+          await enqueueSyncMutation({
+            uid: firebaseUser.uid,
+            entityType: 'profilePatch',
+            entityId: firebaseUser.uid,
+            op: 'upsert',
+            payload: { studyLang: next },
+          });
+        } else {
+          handleFirestoreError(err, OperationType.UPDATE, `users/${firebaseUser.uid}`);
+        }
       }
-    }
-  };
-
-  const handleSaveProgress = async (
-    lessonId: string,
-    completedParts: string[],
-    isCompleted: boolean,
-    quizScore: number
-  ) => {
-    if (!firebaseUser || !profile || profile.track === 'unset') return;
-    const ref = doc(db, 'users', firebaseUser.uid, 'progress', lessonId);
-    const existing = progressMap[lessonId];
-    const payload = {
-      userId: firebaseUser.uid,
-      lessonId,
-      track: profile.track,
-      completedParts,
-      isCompleted,
-      quizScore: Math.max(quizScore, existing?.quizScore || 0),
-      studyMinutes: (existing?.studyMinutes || 0) + 15,
-      lastAccessedAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    };
-    try {
-      await setDoc(ref, payload);
-      if (isCompleted && !existing?.isCompleted) {
-        await handleAwardPoints(40, 'Lesson Master');
-      }
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `users/${firebaseUser.uid}/progress/${lessonId}`);
     }
   };
 
@@ -842,6 +1411,26 @@ export default function App() {
     const currentBadges = profile.badges || [];
     const nextBadges =
       badgeName && !currentBadges.includes(badgeName) ? [...currentBadges, badgeName].slice(0, 30) : currentBadges;
+
+    const updatedProf: UserProfile = {
+      ...profile,
+      points: nextPoints,
+      level: nextLevel,
+      badges: nextBadges,
+    };
+    setProfile(updatedProf);
+    await saveOfflineSessionProfile(updatedProf);
+
+    if (isBrowserOffline()) {
+      await enqueueSyncMutation({
+        uid: firebaseUser.uid,
+        entityType: 'pointsAward',
+        entityId: firebaseUser.uid,
+        op: 'upsert',
+        payload: { addPoints, badgeName },
+      });
+      return;
+    }
 
     try {
       await updateDoc(doc(db, 'users', firebaseUser.uid), {
@@ -861,59 +1450,237 @@ export default function App() {
         updatedAt: serverTimestamp(),
       });
     } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `users/${firebaseUser.uid}`);
+      if (isFirestoreOfflineError(err) || isBrowserOffline()) {
+        await enqueueSyncMutation({
+          uid: firebaseUser.uid,
+          entityType: 'pointsAward',
+          entityId: firebaseUser.uid,
+          op: 'upsert',
+          payload: { addPoints, badgeName },
+        });
+      } else {
+        handleFirestoreError(err, OperationType.UPDATE, `users/${firebaseUser.uid}`);
+      }
+    }
+  };
+
+  const handleSaveProgress = async (
+    lessonId: string,
+    completedParts: string[],
+    isCompleted: boolean,
+    quizScore: number
+  ) => {
+    if (!firebaseUser || !profile || profile.track === 'unset') return;
+    const existing = progressMap[lessonId];
+    const mergedParts = Array.from(new Set([...(existing?.completedParts || []), ...completedParts]));
+    const nextProgress: LessonProgress = {
+      userId: firebaseUser.uid,
+      lessonId,
+      track: profile.track,
+      completedParts: mergedParts,
+      isCompleted: Boolean(existing?.isCompleted || isCompleted),
+      quizScore: Math.max(quizScore, existing?.quizScore || 0),
+      studyMinutes: (existing?.studyMinutes || 0) + 15,
+      lastAccessedAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    // Optimistic update + IndexedDB persist immediately
+    setProgressMap((prev) => ({ ...prev, [lessonId]: nextProgress }));
+    await saveOfflineProgressItem(firebaseUser.uid, nextProgress);
+
+    const awardLessonBadge = isCompleted && !existing?.isCompleted;
+
+    if (isBrowserOffline()) {
+      await enqueueSyncMutation({
+        uid: firebaseUser.uid,
+        entityType: 'progress',
+        entityId: lessonId,
+        op: 'upsert',
+        payload: nextProgress,
+      });
+      if (awardLessonBadge) {
+        await handleAwardPoints(40, 'Lesson Master');
+      }
+      return;
+    }
+
+    const ref = doc(db, 'users', firebaseUser.uid, 'progress', lessonId);
+    try {
+      const snap = await getDoc(ref);
+      if (snap.exists()) {
+        await updateDoc(ref, {
+          completedParts: nextProgress.completedParts,
+          isCompleted: nextProgress.isCompleted,
+          quizScore: nextProgress.quizScore,
+          studyMinutes: nextProgress.studyMinutes,
+          lastAccessedAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      } else {
+        await setDoc(ref, {
+          userId: nextProgress.userId,
+          lessonId: nextProgress.lessonId,
+          track: nextProgress.track,
+          completedParts: nextProgress.completedParts,
+          isCompleted: nextProgress.isCompleted,
+          quizScore: nextProgress.quizScore,
+          studyMinutes: nextProgress.studyMinutes,
+          lastAccessedAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      }
+      if (awardLessonBadge) {
+        await handleAwardPoints(40, 'Lesson Master');
+      }
+    } catch (err) {
+      if (isFirestoreOfflineError(err) || isBrowserOffline()) {
+        await enqueueSyncMutation({
+          uid: firebaseUser.uid,
+          entityType: 'progress',
+          entityId: lessonId,
+          op: 'upsert',
+          payload: nextProgress,
+        });
+        if (awardLessonBadge) {
+          await handleAwardPoints(40, 'Lesson Master');
+        }
+      } else {
+        handleFirestoreError(err, OperationType.WRITE, `users/${firebaseUser.uid}/progress/${lessonId}`);
+      }
     }
   };
 
   const handleSaveTask = async (task: StudyTask) => {
     if (!firebaseUser) return;
-    const ref = doc(db, 'users', firebaseUser.uid, 'studyTasks', task.id);
+    const cleanTask: StudyTask = { ...task, lessonId: task.lessonId || '', updatedAt: Date.now() };
     const exists = studyTasks.some((t) => t.id === task.id);
+
+    setStudyTasks((prev) =>
+      exists ? prev.map((t) => (t.id === task.id ? cleanTask : t)) : [cleanTask, ...prev]
+    );
+    await saveOfflineTask(cleanTask);
+
+    if (isBrowserOffline()) {
+      await enqueueSyncMutation({
+        uid: firebaseUser.uid,
+        entityType: 'studyTask',
+        entityId: task.id,
+        op: 'upsert',
+        payload: cleanTask,
+      });
+      return;
+    }
+
+    const ref = doc(db, 'users', firebaseUser.uid, 'studyTasks', task.id);
     try {
-      if (exists) {
+      const snap = await getDoc(ref);
+      if (snap.exists()) {
         await updateDoc(ref, {
-          title: task.title,
-          lessonId: task.lessonId || '',
-          scheduledDate: task.scheduledDate,
-          durationMinutes: task.durationMinutes,
-          taskType: task.taskType,
-          completed: task.completed,
+          title: cleanTask.title,
+          lessonId: cleanTask.lessonId || '',
+          scheduledDate: cleanTask.scheduledDate,
+          durationMinutes: cleanTask.durationMinutes,
+          taskType: cleanTask.taskType,
+          completed: cleanTask.completed,
           updatedAt: serverTimestamp(),
         });
       } else {
         await setDoc(ref, {
-          ...task,
-          lessonId: task.lessonId || '',
+          ...cleanTask,
+          lessonId: cleanTask.lessonId || '',
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         });
       }
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `users/${firebaseUser.uid}/studyTasks/${task.id}`);
+      if (isFirestoreOfflineError(err) || isBrowserOffline()) {
+        await enqueueSyncMutation({
+          uid: firebaseUser.uid,
+          entityType: 'studyTask',
+          entityId: task.id,
+          op: 'upsert',
+          payload: cleanTask,
+        });
+      } else {
+        handleFirestoreError(err, OperationType.WRITE, `users/${firebaseUser.uid}/studyTasks/${task.id}`);
+      }
     }
   };
 
   const handleDeleteTask = async (taskId: string) => {
     if (!firebaseUser) return;
+    setStudyTasks((prev) => prev.filter((t) => t.id !== taskId));
+    await deleteOfflineTask(taskId);
+
+    if (isBrowserOffline()) {
+      await enqueueSyncMutation({
+        uid: firebaseUser.uid,
+        entityType: 'studyTask',
+        entityId: taskId,
+        op: 'delete',
+        payload: { id: taskId },
+      });
+      return;
+    }
+
     try {
       await deleteDoc(doc(db, 'users', firebaseUser.uid, 'studyTasks', taskId));
     } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, `users/${firebaseUser.uid}/studyTasks/${taskId}`);
+      if (isFirestoreOfflineError(err) || isBrowserOffline()) {
+        await enqueueSyncMutation({
+          uid: firebaseUser.uid,
+          entityType: 'studyTask',
+          entityId: taskId,
+          op: 'delete',
+          payload: { id: taskId },
+        });
+      } else {
+        handleFirestoreError(err, OperationType.DELETE, `users/${firebaseUser.uid}/studyTasks/${taskId}`);
+      }
     }
   };
 
   const handleSaveAttempt = async (attempt: ExamAttempt) => {
     if (!firebaseUser) return;
+    const existingLocal = examAttempts.find((a) => a.id === attempt.id);
+    const nextAttempt: ExamAttempt = { ...attempt, updatedAt: { seconds: Math.floor(Date.now() / 1000) } };
+    const shouldAwardExamPoints =
+      attempt.status === 'submitted' && attempt.score > 0 && existingLocal?.status !== 'submitted';
+
+    setExamAttempts((prev) =>
+      prev.some((a) => a.id === attempt.id)
+        ? prev.map((a) => (a.id === attempt.id ? nextAttempt : a))
+        : [nextAttempt, ...prev]
+    );
+    await saveOfflineAttempt(nextAttempt);
+
+    if (isBrowserOffline()) {
+      await enqueueSyncMutation({
+        uid: firebaseUser.uid,
+        entityType: 'examAttempt',
+        entityId: attempt.id,
+        op: 'upsert',
+        payload: nextAttempt,
+      });
+      if (shouldAwardExamPoints) {
+        await handleAwardPoints(attempt.score * 25);
+      }
+      return;
+    }
+
     const ref = doc(db, 'users', firebaseUser.uid, 'examAttempts', attempt.id);
-    const exists = examAttempts.some((a) => a.id === attempt.id);
     try {
-      if (exists) {
-        await updateDoc(ref, {
-          status: attempt.status,
-          score: attempt.score,
-          answersJson: attempt.answersJson || '{}',
-          updatedAt: serverTimestamp(),
-        });
+      const snap = await getDoc(ref);
+      if (snap.exists()) {
+        if (snap.data()?.status === 'in_progress') {
+          await updateDoc(ref, {
+            status: attempt.status,
+            score: attempt.score,
+            answersJson: attempt.answersJson || '{}',
+            updatedAt: serverTimestamp(),
+          });
+        }
       } else {
         await setDoc(ref, {
           ...attempt,
@@ -921,20 +1688,51 @@ export default function App() {
           updatedAt: serverTimestamp(),
         });
       }
-      if (attempt.status === 'submitted' && attempt.score > 0) {
+      if (shouldAwardExamPoints) {
         await handleAwardPoints(attempt.score * 25);
       }
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `users/${firebaseUser.uid}/examAttempts/${attempt.id}`);
+      if (isFirestoreOfflineError(err) || isBrowserOffline()) {
+        await enqueueSyncMutation({
+          uid: firebaseUser.uid,
+          entityType: 'examAttempt',
+          entityId: attempt.id,
+          op: 'upsert',
+          payload: nextAttempt,
+        });
+        if (shouldAwardExamPoints) {
+          await handleAwardPoints(attempt.score * 25);
+        }
+      } else {
+        handleFirestoreError(err, OperationType.WRITE, `users/${firebaseUser.uid}/examAttempts/${attempt.id}`);
+      }
     }
   };
 
   const handleSaveSession = async (session: TutorSession) => {
     if (!firebaseUser) return;
+    const cleanSession: TutorSession = { ...session, updatedAt: { seconds: Math.floor(Date.now() / 1000) } };
+    setTutorSessions((prev) => {
+      const exists = prev.some((s) => s.id === session.id);
+      return exists ? prev.map((s) => (s.id === session.id ? cleanSession : s)) : [cleanSession, ...prev];
+    });
+    await saveOfflineTutorSession(cleanSession);
+
+    if (isBrowserOffline()) {
+      await enqueueSyncMutation({
+        uid: firebaseUser.uid,
+        entityType: 'tutorSession',
+        entityId: session.id,
+        op: 'upsert',
+        payload: cleanSession,
+      });
+      return;
+    }
+
     const ref = doc(db, 'users', firebaseUser.uid, 'tutorSessions', session.id);
-    const exists = tutorSessions.some((s) => s.id === session.id);
     try {
-      if (exists) {
+      const snap = await getDoc(ref);
+      if (snap.exists()) {
         await updateDoc(ref, {
           title: session.title,
           mode: session.mode,
@@ -949,40 +1747,185 @@ export default function App() {
         });
       }
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `users/${firebaseUser.uid}/tutorSessions/${session.id}`);
+      if (isFirestoreOfflineError(err) || isBrowserOffline()) {
+        await enqueueSyncMutation({
+          uid: firebaseUser.uid,
+          entityType: 'tutorSession',
+          entityId: session.id,
+          op: 'upsert',
+          payload: cleanSession,
+        });
+      } else {
+        handleFirestoreError(err, OperationType.WRITE, `users/${firebaseUser.uid}/tutorSessions/${session.id}`);
+      }
     }
   };
 
   const handleDeleteSession = async (sessionId: string) => {
     if (!firebaseUser) return;
+    setTutorSessions((prev) => prev.filter((s) => s.id !== sessionId));
+    await deleteOfflineTutorSession(sessionId);
+
+    if (isBrowserOffline()) {
+      await enqueueSyncMutation({
+        uid: firebaseUser.uid,
+        entityType: 'tutorSession',
+        entityId: sessionId,
+        op: 'delete',
+        payload: { id: sessionId },
+      });
+      return;
+    }
+
     try {
       await deleteDoc(doc(db, 'users', firebaseUser.uid, 'tutorSessions', sessionId));
     } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, `users/${firebaseUser.uid}/tutorSessions/${sessionId}`);
+      if (isFirestoreOfflineError(err) || isBrowserOffline()) {
+        await enqueueSyncMutation({
+          uid: firebaseUser.uid,
+          entityType: 'tutorSession',
+          entityId: sessionId,
+          op: 'delete',
+          payload: { id: sessionId },
+        });
+      } else {
+        handleFirestoreError(err, OperationType.DELETE, `users/${firebaseUser.uid}/tutorSessions/${sessionId}`);
+      }
     }
   };
 
   const handleSaveGraph = async (graph: SavedGraph) => {
     if (!firebaseUser) return;
+    setSavedGraphs((prev) =>
+      prev.some((g) => g.id === graph.id) ? prev.map((g) => (g.id === graph.id ? graph : g)) : [graph, ...prev]
+    );
+    await saveOfflineGraph(graph);
+
+    if (isBrowserOffline()) {
+      await enqueueSyncMutation({
+        uid: firebaseUser.uid,
+        entityType: 'savedGraph',
+        entityId: graph.id,
+        op: 'upsert',
+        payload: graph,
+      });
+      return;
+    }
+
     const ref = doc(db, 'users', firebaseUser.uid, 'graphs', graph.id);
     try {
-      await setDoc(ref, {
-        ...graph,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
+      const snap = await getDoc(ref);
+      if (snap.exists()) {
+        await updateDoc(ref, {
+          title: graph.title,
+          graphType: graph.graphType,
+          xLabel: graph.xLabel,
+          yLabel: graph.yLabel,
+          pointsJson: graph.pointsJson,
+          updatedAt: serverTimestamp(),
+        });
+      } else {
+        await setDoc(ref, {
+          ...graph,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      }
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `users/${firebaseUser.uid}/graphs/${graph.id}`);
+      if (isFirestoreOfflineError(err) || isBrowserOffline()) {
+        await enqueueSyncMutation({
+          uid: firebaseUser.uid,
+          entityType: 'savedGraph',
+          entityId: graph.id,
+          op: 'upsert',
+          payload: graph,
+        });
+      } else {
+        handleFirestoreError(err, OperationType.WRITE, `users/${firebaseUser.uid}/graphs/${graph.id}`);
+      }
     }
   };
 
   const handleDeleteGraph = async (graphId: string) => {
     if (!firebaseUser) return;
+    setSavedGraphs((prev) => prev.filter((g) => g.id !== graphId));
+    await deleteOfflineGraph(graphId);
+
+    if (isBrowserOffline()) {
+      await enqueueSyncMutation({
+        uid: firebaseUser.uid,
+        entityType: 'savedGraph',
+        entityId: graphId,
+        op: 'delete',
+        payload: { id: graphId },
+      });
+      return;
+    }
+
     try {
       await deleteDoc(doc(db, 'users', firebaseUser.uid, 'graphs', graphId));
     } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, `users/${firebaseUser.uid}/graphs/${graphId}`);
+      if (isFirestoreOfflineError(err) || isBrowserOffline()) {
+        await enqueueSyncMutation({
+          uid: firebaseUser.uid,
+          entityType: 'savedGraph',
+          entityId: graphId,
+          op: 'delete',
+          payload: { id: graphId },
+        });
+      } else {
+        handleFirestoreError(err, OperationType.DELETE, `users/${firebaseUser.uid}/graphs/${graphId}`);
+      }
     }
+  };
+
+  // Offline Favorites, Study Notes & Exam Resume Handlers
+  const handleRefreshSaved = useCallback(async () => {
+    if (!firebaseUser) return;
+    const [nextFavs, nextNotes] = await Promise.all([
+      getOfflineFavorites(firebaseUser.uid),
+      getOfflineNotes(firebaseUser.uid),
+    ]);
+    setFavorites(nextFavs);
+    setNotes(nextNotes);
+  }, [firebaseUser]);
+
+  const handleToggleFavorite = async (item: {
+    itemType: 'lesson' | 'formula' | 'question';
+    itemId: string;
+    titleAr: string;
+    titleEn: string;
+  }) => {
+    if (!firebaseUser) return;
+    await toggleFavoriteItem({
+      uid: firebaseUser.uid,
+      ...item,
+    });
+    await handleRefreshSaved();
+  };
+
+  const handleSaveNote = async (note: {
+    itemType: 'lesson' | 'formula' | 'question';
+    itemId: string;
+    title: string;
+    content: string;
+  }) => {
+    if (!firebaseUser) return;
+    await saveOfflineNote({
+      uid: firebaseUser.uid,
+      ...note,
+    });
+    await handleRefreshSaved();
+  };
+
+  const handleSaveActiveExamSnapshot = async (snapshot: ActiveExamSnapshot | null) => {
+    setActiveExamSnapshot(snapshot);
+    await saveActiveExamSnapshot(snapshot, firebaseUser?.uid);
+  };
+
+  const handleSignOut = async () => {
+    await saveOfflineSessionProfile(null).catch(() => {});
+    await signOut(auth);
   };
 
   // Admin Mutations
@@ -1168,13 +2111,28 @@ export default function App() {
     },
   ];
 
-  // Admin nav section removed per user request
-
   const openLesson = (lessonId: string) => {
     setSelectedLessonId(lessonId);
     setActiveSection('curriculum');
     setMobileMenuOpen(false);
   };
+
+  const openOfflineCenter = (tab: 'downloads' | 'storage' | 'saved' = 'downloads') => {
+    setOfflineCenterTab(tab);
+    setOfflineCenterOpen(true);
+    setMobileMenuOpen(false);
+  };
+
+  const completedPacksCount = downloadPacks.filter((p) => p.status === 'completed').length;
+
+  const lazyFallback = (
+    <div className="glass-card rounded-2xl p-8 flex items-center justify-center gap-3 text-sm font-medium min-h-[260px]">
+      <span className="glass-icon glass-icon-cyan w-9 h-9">
+        <Atom className="w-5 h-5 animate-spin" />
+      </span>
+      <span>{t.common.loading}</span>
+    </div>
+  );
 
   return (
     <div className="min-h-screen relative physics-space-canvas physics-grid-bg text-slate-900 dark:text-slate-100 flex">
@@ -1204,7 +2162,7 @@ export default function App() {
                       setActiveSection(item.id);
                       if (item.id !== 'curriculum') setSelectedLessonId(null);
                     }}
-                    className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium transition-all whitespace-nowrap ${
+                    className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium transition-all whitespace-nowrap cursor-pointer ${
                       active
                         ? 'glass-btn-primary text-white'
                         : 'text-slate-700 dark:text-slate-300 hover:bg-white/60 dark:hover:bg-white/[0.06] border border-transparent hover:border-slate-200/70 dark:hover:border-white/10 active:scale-[0.98]'
@@ -1223,15 +2181,29 @@ export default function App() {
 
         <div className="p-3 border-t border-slate-200/70 dark:border-white/10 space-y-1.5">
           <button
+            onClick={() => openOfflineCenter('downloads')}
+            className="w-full flex items-center justify-between gap-2 px-3 py-2 rounded-xl text-xs font-medium text-slate-700 dark:text-slate-200 glass-btn-secondary cursor-pointer"
+          >
+            <span className="flex items-center gap-2.5 min-w-0">
+              <HardDrive className="w-4 h-4 text-blue-600 dark:text-cyan-400 shrink-0" />
+              <span className="truncate">{lang === 'ar' ? 'مركز أوفلاين والتخزين' : 'Offline & Storage'}</span>
+            </span>
+            {(completedPacksCount > 0 || favorites.length > 0) && (
+              <span className="px-1.5 py-0.5 rounded-md bg-cyan-500/20 text-cyan-600 dark:text-cyan-300 font-mono-num text-[10px]">
+                {completedPacksCount + favorites.length}
+              </span>
+            )}
+          </button>
+          <button
             onClick={() => setShowTrackSwitcher(true)}
-            className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium text-slate-700 dark:text-slate-200 glass-btn-secondary"
+            className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium text-slate-700 dark:text-slate-200 glass-btn-secondary cursor-pointer"
           >
             <Settings2 className="w-4 h-4 text-blue-600 dark:text-cyan-400" />
             <span className="truncate">{t.common.changeTrack}</span>
           </button>
           <button
-            onClick={() => signOut(auth)}
-            className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium text-rose-600 dark:text-rose-400 hover:bg-rose-500/12 border border-transparent hover:border-rose-500/20 transition-all active:scale-[0.98]"
+            onClick={handleSignOut}
+            className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium text-rose-600 dark:text-rose-400 hover:bg-rose-500/12 border border-transparent hover:border-rose-500/20 transition-all active:scale-[0.98] cursor-pointer"
           >
             <LogOut className="w-4 h-4" />
             <span>{t.common.signOut}</span>
@@ -1281,6 +2253,13 @@ export default function App() {
             </nav>
             <div className="pt-3 border-t border-slate-200/70 dark:border-white/10 space-y-2">
               <button
+                onClick={() => openOfflineCenter('downloads')}
+                className="w-full py-2 px-3 rounded-xl glass-btn-secondary text-xs font-medium flex items-center justify-between"
+              >
+                <span>{lang === 'ar' ? 'مركز أوفلاين والتخزين' : 'Offline & Storage'}</span>
+                <HardDrive className="w-3.5 h-3.5 text-cyan-500" />
+              </button>
+              <button
                 onClick={() => {
                   setMobileMenuOpen(false);
                   setShowTrackSwitcher(true);
@@ -1290,7 +2269,7 @@ export default function App() {
                 {t.common.changeTrack}
               </button>
               <button
-                onClick={() => signOut(auth)}
+                onClick={handleSignOut}
                 className="w-full py-2 px-3 rounded-xl text-xs font-medium text-rose-500 hover:bg-rose-500/10 transition-colors"
               >
                 {t.common.signOut}
@@ -1302,8 +2281,8 @@ export default function App() {
 
       {/* Main Content Area */}
       <div className="relative z-10 flex-1 flex flex-col min-w-0">
-        {/* Top Bar: Clean Breadcrumb + Language/Study-Language/Theme Controls */}
-        <header className="h-16 px-4 sm:px-6 border-b glass-topbar sticky top-0 z-30 flex items-center justify-between gap-4">
+        {/* Top Bar: Clean Breadcrumb + Offline Status / PWA Install + Language/Theme Controls */}
+        <header className="h-16 px-4 sm:px-6 border-b glass-topbar sticky top-0 z-30 flex items-center justify-between gap-3">
           <div className="flex items-center gap-3 min-w-0">
             <button
               onClick={() => setMobileMenuOpen(true)}
@@ -1319,7 +2298,22 @@ export default function App() {
             </div>
           </div>
 
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+            <OfflineStatusBar
+              lang={lang}
+              isOnline={isOnline}
+              syncStatus={syncStatus}
+              downloadedPacksCount={completedPacksCount}
+              favoritesCount={favorites.length}
+              offlineReady={swUpdates.offlineReady}
+              onDismissOfflineReady={swUpdates.dismissOfflineReady}
+              needRefresh={swUpdates.needRefresh}
+              updating={swUpdates.updating}
+              onApplyUpdate={swUpdates.applyUpdate}
+              onDismissUpdate={swUpdates.dismissUpdate}
+              onTriggerSync={handleTriggerSync}
+              onOpenOfflineCenter={openOfflineCenter}
+            />
             <div className="hidden md:flex items-center">
               <StudyLanguageSwitcher
                 value={studyLang}
@@ -1333,27 +2327,27 @@ export default function App() {
               className="px-3 py-1.5 rounded-xl glass-btn-secondary text-xs font-medium flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
             >
               <Globe className="w-3.5 h-3.5 text-blue-600 dark:text-cyan-400" />
-              {t.common.switchLang}
+              <span className="hidden sm:inline">{t.common.switchLang}</span>
             </button>
             <button
-    onClick={toggleFullscreen}
-    className="p-2 rounded-xl glass-btn-secondary cursor-pointer"
-    title={lang === 'ar' ? 'ملء الشاشة' : 'Toggle Fullscreen'}
-    aria-label="Toggle Fullscreen"
-  >
-    {isFullscreen ? (
-      <Minimize2 className="w-4 h-4 text-blue-600 dark:text-cyan-400" />
-    ) : (
-      <Maximize2 className="w-4 h-4 text-blue-600 dark:text-cyan-400" />
-    )}
-  </button>
-  <button
-    onClick={() => setTheme((th) => (th === 'dark' ? 'light' : 'dark'))}
-    className="p-2 rounded-xl glass-btn-secondary cursor-pointer"
-    aria-label="Theme toggle"
-  >
-    {theme === 'dark' ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4 text-slate-700" />}
-  </button>
+              onClick={toggleFullscreen}
+              className="p-2 rounded-xl glass-btn-secondary cursor-pointer"
+              title={lang === 'ar' ? 'ملء الشاشة' : 'Toggle Fullscreen'}
+              aria-label="Toggle Fullscreen"
+            >
+              {isFullscreen ? (
+                <Minimize2 className="w-4 h-4 text-blue-600 dark:text-cyan-400" />
+              ) : (
+                <Maximize2 className="w-4 h-4 text-blue-600 dark:text-cyan-400" />
+              )}
+            </button>
+            <button
+              onClick={() => setTheme((th) => (th === 'dark' ? 'light' : 'dark'))}
+              className="p-2 rounded-xl glass-btn-secondary cursor-pointer"
+              aria-label="Theme toggle"
+            >
+              {theme === 'dark' ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4 text-slate-700" />}
+            </button>
           </div>
         </header>
 
@@ -1370,159 +2364,212 @@ export default function App() {
               </button>
             </div>
           )}
-          {activeSection === 'dashboard' && (
-            <DashboardView
-              lang={lang}
-              studyLang={studyLang}
-              onChangeStudyLang={handleChangeStudyLang}
-              profile={profile}
-              lessons={mergedLessons}
-              progressMap={progressMap}
-              examAttempts={examAttempts}
-              studyTasks={studyTasks}
-              announcements={announcements}
-              onNavigate={(sec) => setActiveSection(sec)}
-              onOpenLesson={openLesson}
-              onToggleTask={(task) => handleSaveTask({ ...task, completed: !task.completed })}
-            />
-          )}
 
-          {activeSection === 'curriculum' && (
-            <CurriculumView
-              lang={lang}
-              studyLang={studyLang}
-              onChangeStudyLang={handleChangeStudyLang}
-              profile={profile}
-              lessons={mergedLessons}
-              questions={mergedQuestions}
-              progressMap={progressMap}
-              selectedLessonId={selectedLessonId}
-              onSelectLesson={setSelectedLessonId}
-              onSaveProgress={handleSaveProgress}
-              onAskTutorWithLesson={(lesson) => {
-                setTutorLessonContext(lesson);
-                setActiveSection('tutor');
-              }}
-            />
-          )}
+          <ErrorBoundary lang={lang}>
+            <Suspense fallback={lazyFallback}>
+              {activeSection === 'dashboard' && (
+                <DashboardView
+                  lang={lang}
+                  studyLang={studyLang}
+                  onChangeStudyLang={handleChangeStudyLang}
+                  profile={profile}
+                  lessons={mergedLessons}
+                  progressMap={progressMap}
+                  examAttempts={examAttempts}
+                  studyTasks={studyTasks}
+                  announcements={announcements}
+                  onNavigate={(sec) => setActiveSection(sec)}
+                  onOpenLesson={openLesson}
+                  onToggleTask={(task) => handleSaveTask({ ...task, completed: !task.completed })}
+                />
+              )}
 
-          {activeSection === 'formulas' && (
-            <FormulaLibraryView
-              lang={lang}
-              studyLang={studyLang}
-              formulas={FORMULAS_SEED}
-              onOpenLesson={openLesson}
-            />
-          )}
+              {activeSection === 'curriculum' && (
+                <CurriculumView
+                  lang={lang}
+                  studyLang={studyLang}
+                  onChangeStudyLang={handleChangeStudyLang}
+                  profile={profile}
+                  lessons={mergedLessons}
+                  questions={mergedQuestions}
+                  progressMap={progressMap}
+                  selectedLessonId={selectedLessonId}
+                  onSelectLesson={setSelectedLessonId}
+                  onSaveProgress={handleSaveProgress}
+                  onAskTutorWithLesson={(lesson) => {
+                    setTutorLessonContext(lesson);
+                    setActiveSection('tutor');
+                  }}
+                  isOnline={isOnline}
+                  downloadPacks={downloadPacks}
+                  onDownloadPacksChange={setDownloadPacks}
+                  favorites={favorites}
+                  onToggleFavorite={handleToggleFavorite}
+                  notes={notes}
+                  onSaveNote={handleSaveNote}
+                  onOpenOfflineDownloads={() => openOfflineCenter('downloads')}
+                />
+              )}
 
-          {activeSection === 'lab' && <VirtualLabView lang={lang} studyLang={studyLang} labs={mergedLabs} />}
+              {activeSection === 'formulas' && (
+                <FormulaLibraryView
+                  lang={lang}
+                  studyLang={studyLang}
+                  formulas={FORMULAS_SEED}
+                  onOpenLesson={openLesson}
+                  favorites={favorites}
+                  onToggleFavorite={handleToggleFavorite}
+                />
+              )}
 
-          {activeSection === 'graphing' && (
-            <GraphingToolView
-              lang={lang}
-              studyLang={studyLang}
-              profile={profile}
-              savedGraphs={savedGraphs}
-              onSaveGraph={handleSaveGraph}
-              onDeleteGraph={handleDeleteGraph}
-            />
-          )}
+              {activeSection === 'lab' && <VirtualLabView lang={lang} studyLang={studyLang} labs={mergedLabs} />}
 
-          {activeSection === 'questions' && (
-            <QuestionBankView
-              lang={lang}
-              studyLang={studyLang}
-              profile={profile}
-              questions={mergedQuestions}
-            />
-          )}
+              {activeSection === 'graphing' && (
+                <GraphingToolView
+                  lang={lang}
+                  studyLang={studyLang}
+                  profile={profile}
+                  savedGraphs={savedGraphs}
+                  onSaveGraph={handleSaveGraph}
+                  onDeleteGraph={handleDeleteGraph}
+                />
+              )}
 
-          {activeSection === 'exams' && (
-            <ExamsView
-              lang={lang}
-              studyLang={studyLang}
-              profile={profile}
-              exams={mergedExams}
-              questions={mergedQuestions}
-              attempts={examAttempts}
-              onSaveAttempt={handleSaveAttempt}
-            />
-          )}
+              {activeSection === 'questions' && (
+                <QuestionBankView
+                  lang={lang}
+                  studyLang={studyLang}
+                  profile={profile}
+                  questions={mergedQuestions}
+                  favorites={favorites}
+                  onToggleFavorite={handleToggleFavorite}
+                />
+              )}
 
-          {activeSection === 'tutor' && (
-            <TutorView
-              lang={lang}
-              studyLang={studyLang}
-              profile={profile}
-              lessons={mergedLessons}
-              sessions={tutorSessions}
-              initialLessonContext={tutorLessonContext}
-              onSaveSession={handleSaveSession}
-              onDeleteSession={handleDeleteSession}
-            />
-          )}
+              {activeSection === 'exams' && (
+                <ExamsView
+                  lang={lang}
+                  studyLang={studyLang}
+                  profile={profile}
+                  exams={mergedExams}
+                  questions={mergedQuestions}
+                  attempts={examAttempts}
+                  onSaveAttempt={handleSaveAttempt}
+                  activeSnapshot={activeExamSnapshot}
+                  onSaveSnapshot={handleSaveActiveExamSnapshot}
+                  onExamActiveChange={setIsExamActive}
+                  isOnline={isOnline}
+                />
+              )}
 
-          {activeSection === 'solver' && <SolverView lang={lang} studyLang={studyLang} profile={profile} />}
+              {activeSection === 'tutor' && (
+                <TutorView
+                  lang={lang}
+                  studyLang={studyLang}
+                  profile={profile}
+                  lessons={mergedLessons}
+                  sessions={tutorSessions}
+                  initialLessonContext={tutorLessonContext}
+                  onSaveSession={handleSaveSession}
+                  onDeleteSession={handleDeleteSession}
+                  isOnline={isOnline}
+                  onOpenLesson={openLesson}
+                />
+              )}
 
-          {activeSection === 'planner' && (
-            <StudyPlannerView
-              lang={lang}
-              studyLang={studyLang}
-              profile={profile}
-              lessons={mergedLessons}
-              progressMap={progressMap}
-              tasks={studyTasks}
-              onSaveTask={handleSaveTask}
-              onDeleteTask={handleDeleteTask}
-            />
-          )}
+              {activeSection === 'solver' && (
+                <SolverView
+                  lang={lang}
+                  studyLang={studyLang}
+                  profile={profile}
+                  lessons={mergedLessons}
+                  isOnline={isOnline}
+                  onOpenLesson={openLesson}
+                />
+              )}
 
-          {activeSection === 'challenges' && (
-            <ChallengesView
-              lang={lang}
-              studyLang={studyLang}
-              profile={profile}
-              challenges={CHALLENGES_SEED}
-              leaderboard={leaderboard}
-              onAwardPoints={handleAwardPoints}
-            />
-          )}
+              {activeSection === 'planner' && (
+                <StudyPlannerView
+                  lang={lang}
+                  studyLang={studyLang}
+                  profile={profile}
+                  lessons={mergedLessons}
+                  progressMap={progressMap}
+                  tasks={studyTasks}
+                  onSaveTask={handleSaveTask}
+                  onDeleteTask={handleDeleteTask}
+                />
+              )}
 
-          {activeSection === 'analytics' && (
-            <AnalyticsView
-              lang={lang}
-              studyLang={studyLang}
-              profile={profile}
-              lessons={mergedLessons}
-              progressMap={progressMap}
-              attempts={examAttempts}
-              onOpenLesson={openLesson}
-            />
-          )}
+              {activeSection === 'challenges' && (
+                <ChallengesView
+                  lang={lang}
+                  studyLang={studyLang}
+                  profile={profile}
+                  challenges={CHALLENGES_SEED}
+                  leaderboard={leaderboard}
+                  onAwardPoints={handleAwardPoints}
+                />
+              )}
 
-          {activeSection === 'admin' && (
-            <AdminDashboardView
-              lang={lang}
-              studyLang={studyLang}
-              profile={profile}
-              lessons={mergedLessons}
-              questions={mergedQuestions}
-              exams={mergedExams}
-              labs={mergedLabs}
-              students={adminStudents}
-              announcements={announcements}
-              onSaveLesson={handleAdminSaveLesson}
-              onDeleteLesson={handleAdminDeleteLesson}
-              onSaveQuestion={handleAdminSaveQuestion}
-              onDeleteQuestion={handleAdminDeleteQuestion}
-              onSaveExam={handleAdminSaveExam}
-              onDeleteExam={handleAdminDeleteExam}
-              onSaveLab={handleAdminSaveLab}
-              onSaveAnnouncement={handleAdminSaveAnnouncement}
-            />
-          )}
+              {activeSection === 'analytics' && (
+                <AnalyticsView
+                  lang={lang}
+                  studyLang={studyLang}
+                  profile={profile}
+                  lessons={mergedLessons}
+                  progressMap={progressMap}
+                  attempts={examAttempts}
+                  onOpenLesson={openLesson}
+                />
+              )}
+
+              {activeSection === 'admin' && (
+                <AdminDashboardView
+                  lang={lang}
+                  studyLang={studyLang}
+                  profile={profile}
+                  lessons={mergedLessons}
+                  questions={mergedQuestions}
+                  exams={mergedExams}
+                  labs={mergedLabs}
+                  students={adminStudents}
+                  announcements={announcements}
+                  onSaveLesson={handleAdminSaveLesson}
+                  onDeleteLesson={handleAdminDeleteLesson}
+                  onSaveQuestion={handleAdminSaveQuestion}
+                  onDeleteQuestion={handleAdminDeleteQuestion}
+                  onSaveExam={handleAdminSaveExam}
+                  onDeleteExam={handleAdminDeleteExam}
+                  onSaveLab={handleAdminSaveLab}
+                  onSaveAnnouncement={handleAdminSaveAnnouncement}
+                />
+              )}
+            </Suspense>
+          </ErrorBoundary>
         </main>
       </div>
+
+      {/* Offline Center Modal (Content Downloader, Storage Manager, Favorites & Notes) */}
+      <OfflineCenterModal
+        open={offlineCenterOpen}
+        initialTab={offlineCenterTab}
+        onClose={() => setOfflineCenterOpen(false)}
+        lang={lang}
+        studyLang={studyLang}
+        profile={profile}
+        lessons={mergedLessons}
+        questions={mergedQuestions}
+        downloadPacks={downloadPacks}
+        onDownloadPacksChange={setDownloadPacks}
+        favorites={favorites}
+        notes={notes}
+        onRefreshSaved={handleRefreshSaved}
+        onOpenLesson={openLesson}
+        syncStatus={syncStatus}
+        isOnline={isOnline}
+        onTriggerSync={handleTriggerSync}
+      />
     </div>
   );
 }

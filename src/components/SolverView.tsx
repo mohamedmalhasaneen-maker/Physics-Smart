@@ -2,6 +2,9 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Language, StudyLanguage, UserProfile } from '../types/physics';
 import { LatexBlock, RichPhysicsText } from './MathRenderer';
 import { StudyLanguageSwitcher } from './BilingualBlock';
+import { Lesson } from '../types/physics';
+import { FORMULAS_SEED } from '../data/formulasSeed';
+import { OfflineStudyMatch, searchOfflinePhysicsKnowledge } from '../lib/offlinePhysicsFallback';
 import {
   ClientAttachmentError,
   PreparedAttachment,
@@ -9,8 +12,10 @@ import {
   prepareAttachmentFile,
 } from '../lib/attachmentUtils';
 import {
+  BookOpen,
   Camera,
   CheckCircle2,
+  CloudOff,
   FileUp,
   HelpCircle,
   Loader2,
@@ -23,6 +28,9 @@ interface SolverViewProps {
   lang: Language;
   studyLang: StudyLanguage;
   profile: UserProfile;
+  lessons?: Lesson[];
+  isOnline?: boolean;
+  onOpenLesson?: (lessonId: string) => void;
 }
 
 interface SolverSolution {
@@ -42,7 +50,14 @@ interface SolverSolution {
   sanityCheck: string;
 }
 
-export function SolverView({ lang, studyLang, profile }: SolverViewProps) {
+export function SolverView({
+  lang,
+  studyLang,
+  profile,
+  lessons = [],
+  isOnline = true,
+  onOpenLesson,
+}: SolverViewProps) {
   const [outputLang, setOutputLang] = useState<StudyLanguage>(studyLang);
 
   useEffect(() => {
@@ -76,7 +91,15 @@ export function SolverView({ lang, studyLang, profile }: SolverViewProps) {
 
   const [stepExplanations, setStepExplanations] = useState<Record<string, string>>({});
   const [explainingStep, setExplainingStep] = useState<string | null>(null);
+  const [offlineSuggestions, setOfflineSuggestions] = useState<OfflineStudyMatch[]>([]);
   const solveInFlightRef = useRef(false);
+  const abortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+    };
+  }, []);
 
   const startCamera = async () => {
     setErrorMsg('');
@@ -156,17 +179,39 @@ export function SolverView({ lang, studyLang, profile }: SolverViewProps) {
 
   const handleSolve = async () => {
     if (solveInFlightRef.current || loading || attachmentPreparing) return;
+
+    const queryText = inputMode === 'manual' ? `Find ${manualTarget}` : problemText;
+    if (!isOnline || (typeof navigator !== 'undefined' && navigator.onLine === false)) {
+      const localHits = searchOfflinePhysicsKnowledge({
+        query: `${queryText} ${manualGivens.map((g) => g.symbol).join(' ')}`,
+        lessons: lessons.filter((l) => l.track === profile.track && l.grade === profile.grade),
+        formulas: FORMULAS_SEED,
+        studyLang: outputLang,
+      });
+      setOfflineSuggestions(localHits);
+      setErrorMsg(
+        lang === 'ar'
+          ? 'حل المسائل التلقائي بالذكاء الاصطناعي (Gemini) يتطلب اتصالًا بالإنترنت. مسألتك محفوظة كما هي، وعرضنا لك أدناه القوانين والأمثلة المشابهة من المنهج المحفوظ محليًا.'
+          : 'Live AI problem solving requires an internet connection. Your input is preserved, and matching local formulas/examples are shown below.'
+      );
+      return;
+    }
+
     solveInFlightRef.current = true;
+    setOfflineSuggestions([]);
     setLoading(true);
     setErrorMsg('');
     setSolution(null);
     setStepExplanations({});
+    const controller = new AbortController();
+    abortRef.current = controller;
     try {
       const res = await fetch('/api/ai/solver', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
         body: JSON.stringify({
-          problemText: inputMode === 'manual' ? `Find ${manualTarget}` : problemText,
+          problemText: queryText,
           manualGivens: inputMode === 'manual' ? manualGivens : [],
           manualTarget: inputMode === 'manual' ? manualTarget : '',
           language: outputLang,
@@ -219,7 +264,7 @@ export function SolverView({ lang, studyLang, profile }: SolverViewProps) {
       setSolution(data.solution);
       setMathVerif(data.mathVerification);
     } catch (err: any) {
-      if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) {
         setErrorMsg(lang === 'ar' ? 'يبدو أن الاتصال بالإنترنت مقطوع حاليًا.' : 'You appear to be offline.');
       } else {
         setErrorMsg(err?.message || (lang === 'ar' ? 'تعذر حل المسألة حاليًا. يرجى المحاولة مرة أخرى.' : 'Failed to solve problem.'));
@@ -283,6 +328,17 @@ export function SolverView({ lang, studyLang, profile }: SolverViewProps) {
             label={lang === 'ar' ? 'لغة الحل:' : 'Solution Language:'}
           />
         </div>
+
+        {!isOnline && (
+          <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-2.5 text-xs text-amber-700 dark:text-amber-300 flex items-center gap-2">
+            <CloudOff className="w-4 h-4 shrink-0" />
+            <span>
+              {lang === 'ar'
+                ? 'أنت الآن دون اتصال بالإنترنت — خدمة التحليل بالذكاء الاصطناعي تعمل فور عودة الشبكة، ويمكنك البحث في القوانين والأمثلة المحلولة محليًا.'
+                : 'Offline mode — AI Solver resumes online, while local laws and solved examples remain accessible.'}
+            </span>
+          </div>
+        )}
 
         {/* Input Mode Tabs */}
         <div className="flex flex-wrap gap-1.5 p-1 rounded-xl glass-subcard w-fit">
@@ -480,6 +536,37 @@ export function SolverView({ lang, studyLang, profile }: SolverViewProps) {
           {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
           <span>{lang === 'ar' ? 'تحليل وحل المسألة' : 'Analyze & Solve Problem'}</span>
         </button>
+
+        {offlineSuggestions.length > 0 && (
+          <div className="rounded-2xl glass-subcard p-4 border border-cyan-500/25 space-y-2.5 text-xs">
+            <p className="font-bold text-cyan-600 dark:text-cyan-400 flex items-center gap-1.5">
+              <BookOpen className="w-4 h-4" />
+              {lang === 'ar'
+                ? 'قوانين وأمثلة محلولة ذات صلة (من المحتوى المحفوظ أوفلاين):'
+                : 'Related Laws & Worked Examples (Offline Local Content):'}
+            </p>
+            <div className="space-y-2">
+              {offlineSuggestions.map((m, idx) => (
+                <div key={idx} className="rounded-xl bg-white/40 dark:bg-white/[0.03] p-3 space-y-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-semibold text-sm">{m.title}</span>
+                    {m.lessonId && onOpenLesson && (
+                      <button
+                        type="button"
+                        onClick={() => onOpenLesson(m.lessonId!)}
+                        className="text-blue-600 dark:text-cyan-400 hover:underline shrink-0 cursor-pointer"
+                      >
+                        {lang === 'ar' ? 'فتح الدرس' : 'Open Lesson'}
+                      </button>
+                    )}
+                  </div>
+                  {m.latex && <LatexBlock latex={m.latex} />}
+                  {m.snippet && <p className="text-slate-600 dark:text-slate-300">{m.snippet}</p>}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* 11-Step Solution Output */}

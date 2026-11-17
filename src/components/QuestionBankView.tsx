@@ -3,7 +3,8 @@ import { Difficulty, Language, QuestionItem, QuestionType, StudyLanguage, UserPr
 import { getGradeLabel, getTrackLabel } from '../data/tracks';
 import { mergeBilingualOptions, pickStudyText } from '../lib/bilingual';
 import { BilingualTextBlock, StudyLanguageSwitcher } from './BilingualBlock';
-import { CheckCircle2, XCircle } from 'lucide-react';
+import { FavoriteRecord } from '../lib/offlineDb';
+import { Bookmark, CheckCircle2, XCircle } from 'lucide-react';
 import { evaluate } from 'mathjs';
 
 interface QuestionBankViewProps {
@@ -11,10 +12,20 @@ interface QuestionBankViewProps {
   studyLang: StudyLanguage;
   profile: UserProfile;
   questions: QuestionItem[];
+  favorites?: FavoriteRecord[];
+  onToggleFavorite?: (item: { itemType: 'lesson' | 'formula' | 'question'; itemId: string; titleAr: string; titleEn: string }) => Promise<void>;
 }
 
-export function QuestionBankView({ lang, studyLang, profile, questions }: QuestionBankViewProps) {
+export function QuestionBankView({
+  lang,
+  studyLang,
+  profile,
+  questions,
+  favorites = [],
+  onToggleFavorite,
+}: QuestionBankViewProps) {
   const [viewLang, setViewLang] = useState<StudyLanguage>(studyLang);
+  const [visibleLimit, setVisibleLimit] = useState(15);
 
   useEffect(() => {
     setViewLang(studyLang);
@@ -113,18 +124,39 @@ export function QuestionBankView({ lang, studyLang, profile, questions }: Questi
         </div>
       ) : (
         <div className="space-y-4">
-          {visible.map((q, idx) => {
+          {visible.slice(0, visibleLimit).map((q, idx) => {
             const wasChecked = checked[q.id];
             const right = isCorrect(q);
             const mergedOpts = mergeBilingualOptions(q.optionsAr, q.optionsEn, viewLang);
             const stepsLen = Math.max(q.stepsAr?.length || 0, q.stepsEn?.length || 0);
+            const isFav = favorites.some((f) => f.itemType === 'question' && f.itemId === q.id);
             return (
               <div key={q.id} className="rounded-2xl glass-card p-6 space-y-4">
                 <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
                   <span>
                     #{idx + 1} · {q.difficulty.toUpperCase()} · {pickStudyText(q.skillAr, q.skillEn, viewLang)}
                   </span>
-                  <span>{pickStudyText(q.sourceAr, q.sourceEn, viewLang)}</span>
+                  <div className="flex items-center gap-2">
+                    <span>{pickStudyText(q.sourceAr, q.sourceEn, viewLang)}</span>
+                    {onToggleFavorite && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onToggleFavorite({
+                            itemType: 'question',
+                            itemId: q.id,
+                            titleAr: q.textAr.slice(0, 80),
+                            titleEn: q.textEn.slice(0, 80),
+                          })
+                        }
+                        className={`p-1 rounded-lg glass-btn-secondary cursor-pointer ${
+                          isFav ? 'text-amber-500' : 'text-slate-400'
+                        }`}
+                      >
+                        <Bookmark className={`w-3.5 h-3.5 ${isFav ? 'fill-amber-500' : ''}`} />
+                      </button>
+                    )}
+                  </div>
                 </div>
 
                 <BilingualTextBlock
@@ -255,6 +287,19 @@ export function QuestionBankView({ lang, studyLang, profile, questions }: Questi
               </div>
             );
           })}
+          {visible.length > visibleLimit && (
+            <div className="flex justify-center pt-2">
+              <button
+                type="button"
+                onClick={() => setVisibleLimit((n) => n + 15)}
+                className="px-5 py-2.5 rounded-xl glass-btn-secondary text-xs font-semibold cursor-pointer"
+              >
+                {lang === 'ar'
+                  ? `عرض المزيد (${visible.length - visibleLimit} أسئلة متبقية)`
+                  : `Show More (${visible.length - visibleLimit} remaining)`}
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>

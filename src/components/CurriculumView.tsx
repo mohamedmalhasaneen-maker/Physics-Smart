@@ -13,15 +13,37 @@ import { BilingualTextBlock, BilingualTitle, StudyLanguageSwitcher } from './Bil
 import { LatexBlock, LatexInline } from './MathRenderer';
 import { PhysicsDiagramSVG } from './PhysicsDiagramSVG';
 import {
+  DownloadPackRecord,
+  FavoriteRecord,
+  StudyNoteRecord,
+  formatBytes,
+} from '../lib/offlineDb';
+import {
+  buildPackageEstimate,
+  downloadContentPackage,
+  isCacheableAssetUrl,
+  isLessonAvailableOffline,
+  pausePackageDownload,
+  removeDownloadedPackage,
+} from '../lib/contentDownloader';
+import {
   AlertTriangle,
+  Bookmark,
   BookOpen,
   Bot,
   CheckCircle2,
   ChevronRight,
   ChevronLeft,
+  CloudOff,
+  Download,
   ExternalLink,
+  HardDrive,
   HelpCircle,
   Lightbulb,
+  Pause,
+  StickyNote,
+  Trash2,
+  WifiOff,
   Wrench,
 } from 'lucide-react';
 
@@ -37,6 +59,14 @@ interface CurriculumViewProps {
   onSelectLesson: (id: string | null) => void;
   onSaveProgress: (lessonId: string, completedParts: string[], isCompleted: boolean, quizScore: number) => Promise<void>;
   onAskTutorWithLesson: (lesson: Lesson) => void;
+  isOnline?: boolean;
+  downloadPacks?: DownloadPackRecord[];
+  onDownloadPacksChange?: (next: DownloadPackRecord[]) => void;
+  favorites?: FavoriteRecord[];
+  onToggleFavorite?: (item: { itemType: 'lesson' | 'formula' | 'question'; itemId: string; titleAr: string; titleEn: string }) => Promise<void>;
+  notes?: StudyNoteRecord[];
+  onSaveNote?: (note: { itemType: 'lesson' | 'formula' | 'question'; itemId: string; title: string; content: string }) => Promise<void>;
+  onOpenOfflineDownloads?: () => void;
 }
 
 export function CurriculumView({
@@ -51,6 +81,14 @@ export function CurriculumView({
   onSelectLesson,
   onSaveProgress,
   onAskTutorWithLesson,
+  isOnline = true,
+  downloadPacks = [],
+  onDownloadPacksChange,
+  favorites = [],
+  onToggleFavorite,
+  notes = [],
+  onSaveNote,
+  onOpenOfflineDownloads,
 }: CurriculumViewProps) {
   const trackLabel = getTrackLabel(profile.track, studyLang);
   const gradeLabel = getGradeLabel(profile.track, profile.grade, studyLang);
@@ -65,6 +103,23 @@ export function CurriculumView({
   const [revealedAnswers, setRevealedAnswers] = useState<Record<number, boolean>>({});
   const [quizAnswers, setQuizAnswers] = useState<Record<string, string>>({});
   const [quizSubmitted, setQuizSubmitted] = useState(false);
+  const [noteDraft, setNoteDraft] = useState('');
+  const [noteSavedMsg, setNoteSavedMsg] = useState(false);
+
+  const packsRef = React.useRef(downloadPacks);
+  packsRef.current = downloadPacks;
+
+  const upsertPack = (updated: DownloadPackRecord) => {
+    if (!onDownloadPacksChange) return;
+    const prev = packsRef.current;
+    if (updated.status === 'idle') {
+      onDownloadPacksChange(prev.filter((p) => p.id !== updated.id));
+    } else if (prev.some((p) => p.id === updated.id)) {
+      onDownloadPacksChange(prev.map((p) => (p.id === updated.id ? updated : p)));
+    } else {
+      onDownloadPacksChange([updated, ...prev]);
+    }
+  };
 
   useEffect(() => {
     setCheckAnswers({});
@@ -72,9 +127,19 @@ export function CurriculumView({
     setRevealedAnswers({});
     setQuizAnswers({});
     setQuizSubmitted(false);
-  }, [selectedLessonId]);
+    setNoteSavedMsg(false);
+    if (selectedLessonId) {
+      const existing = notes.find((n) => n.itemType === 'lesson' && n.itemId === selectedLessonId);
+      setNoteDraft(existing?.content || '');
+    } else {
+      setNoteDraft('');
+    }
+  }, [selectedLessonId, notes]);
 
   const BackArrow = lang === 'ar' ? ChevronRight : ChevronLeft;
+  const safeTrack = profile.track === 'unset' ? 'thanawiya' : profile.track;
+  const isLessonBookmarked = (lessonId: string) =>
+    favorites.some((f) => f.itemType === 'lesson' && f.itemId === lessonId);
 
   if (!activeLesson) {
     // Group by Term -> Unit
@@ -110,91 +175,260 @@ export function CurriculumView({
             </h1>
             <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">
               {lang === 'ar'
-                ? 'محتوى مخصص بالكامل لنظامك وصفك الدراسي. كل درس مقسم إلى 15 قسمًا علميًا متكاملًا.'
-                : 'Strictly scoped to your educational track and grade. Each lesson contains 15 comprehensive pedagogical sections.'}
+                ? 'محتوى مخصص بالكامل لنظامك وصفك الدراسي. يمكنك تحميل أي درس أو وحدة أو المنهج بالكامل للدراسة دون إنترنت.'
+                : 'Strictly scoped to your track and grade. Download any lesson, unit, or the full curriculum for seamless offline study.'}
             </p>
           </div>
-          <StudyLanguageSwitcher
-            value={studyLang}
-            onChange={onChangeStudyLang}
-            uiLang={lang}
-            label={lang === 'ar' ? 'لغة الدرس:' : 'Study Language:'}
-          />
+          <div className="flex flex-wrap items-center gap-2.5">
+            {onOpenOfflineDownloads && (
+              <button
+                type="button"
+                onClick={onOpenOfflineDownloads}
+                className="px-3.5 py-2 rounded-xl glass-btn-secondary text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+              >
+                <HardDrive className="w-3.5 h-3.5 text-cyan-500" />
+                <span>{lang === 'ar' ? 'مدير التحميلات أوفلاين' : 'Offline Downloads'}</span>
+              </button>
+            )}
+            <StudyLanguageSwitcher
+              value={studyLang}
+              onChange={onChangeStudyLang}
+              uiLang={lang}
+              label={lang === 'ar' ? 'لغة الدرس:' : 'Study Language:'}
+            />
+          </div>
         </div>
 
-        {Array.from(unitsMap.entries()).map(([key, group]) => (
-          <div key={key} className="rounded-2xl glass-card p-6 space-y-4">
-            <div>
-              <p className="text-xs text-slate-500 dark:text-slate-400">
-                {pickStudyText(group.termAr, group.termEn, studyLang)}
-              </p>
-              <BilingualTitle
-                ar={group.unitTitleAr}
-                en={group.unitTitleEn}
-                studyLang={studyLang}
-                as="h2"
-                className="text-lg font-bold mt-0.5"
-              />
-            </div>
+        {Array.from(unitsMap.entries()).map(([key, group]) => {
+          const unitId = group.items[0]?.unitId || key;
+          const unitEst = buildPackageEstimate({
+            scope: 'unit',
+            lessons: scopedLessons,
+            questions,
+            track: safeTrack,
+            grade: profile.grade || 'grade3',
+            unitId,
+            titleAr: group.unitTitleAr,
+            titleEn: group.unitTitleEn,
+          });
+          const unitPack = downloadPacks.find((p) => p.id === unitEst.id);
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {group.items.map((lesson) => {
-                const prog = progressMap[lesson.id];
-                return (
-                  <div
-                    key={lesson.id}
-                    className="rounded-2xl glass-card-interactive p-5 flex flex-col justify-between gap-4"
-                  >
-                    <div className="space-y-2">
-                      <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
-                        <span className="font-mono-num">
-                          {lang === 'ar' ? `الدرس ${lesson.order}` : `Lesson ${lesson.order}`} · {lesson.estimatedMinutes}{' '}
-                          {lang === 'ar' ? 'د' : 'min'}
+          return (
+            <div key={key} className="rounded-2xl glass-card p-6 space-y-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    {pickStudyText(group.termAr, group.termEn, studyLang)}
+                  </p>
+                  <BilingualTitle
+                    ar={group.unitTitleAr}
+                    en={group.unitTitleEn}
+                    studyLang={studyLang}
+                    as="h2"
+                    className="text-lg font-bold mt-0.5"
+                  />
+                </div>
+
+                {onDownloadPacksChange && (
+                  <div className="flex items-center gap-2">
+                    {unitPack?.status === 'downloading' ? (
+                      <button
+                        type="button"
+                        onClick={() => pausePackageDownload(unitPack.id)}
+                        className="px-3 py-1.5 rounded-xl glass-btn-secondary text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <Pause className="w-3.5 h-3.5 text-cyan-500" />
+                        <span className="font-mono-num">{unitPack.progressPct}%</span>
+                      </button>
+                    ) : unitPack?.status === 'completed' ? (
+                      <div className="flex items-center gap-1.5">
+                        <span className="px-2.5 py-1 rounded-xl bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 text-[11px] font-semibold flex items-center gap-1">
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                          {lang === 'ar' ? 'الوحدة متاحة أوفلاين' : 'Unit Offline Ready'}
                         </span>
-                        {prog?.isCompleted && (
-                          <span className="text-emerald-600 dark:text-emerald-400 font-semibold flex items-center gap-1">
-                            <CheckCircle2 className="w-3.5 h-3.5" />
-                            {lang === 'ar' ? 'مكتمل' : 'Completed'}
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            await removeDownloadedPackage(unitPack);
+                            upsertPack({ ...unitPack, status: 'idle' });
+                          }}
+                          className="p-1.5 rounded-lg glass-btn-secondary text-rose-500 cursor-pointer"
+                          title={lang === 'ar' ? 'حذف التحميل' : 'Delete Offline Copy'}
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          downloadContentPackage({
+                            estimate: unitEst,
+                            allLessons: lessons,
+                            allQuestions: questions,
+                            onProgress: upsertPack,
+                          })
+                        }
+                        className="px-3 py-1.5 rounded-xl glass-btn-secondary text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <Download className="w-3.5 h-3.5 text-cyan-500" />
+                        <span>
+                          {lang === 'ar' ? 'تحميل الوحدة' : 'Download Unit'} ({formatBytes(unitEst.totalBytes)})
+                        </span>
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {group.items.map((lesson) => {
+                  const prog = progressMap[lesson.id];
+                  const offlineInfo = isLessonAvailableOffline(lesson.id, downloadPacks);
+                  const lessonEst = buildPackageEstimate({
+                    scope: 'lesson',
+                    lessons: scopedLessons,
+                    questions,
+                    track: safeTrack,
+                    grade: profile.grade || 'grade3',
+                    lessonId: lesson.id,
+                    titleAr: lesson.titleAr,
+                    titleEn: lesson.titleEn,
+                  });
+                  const lessonPack = downloadPacks.find((p) => p.id === lessonEst.id);
+                  const bookmarked = isLessonBookmarked(lesson.id);
+
+                  return (
+                    <div
+                      key={lesson.id}
+                      className="rounded-2xl glass-card-interactive p-5 flex flex-col justify-between gap-4"
+                    >
+                      <div className="space-y-2">
+                        <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500 dark:text-slate-400">
+                          <span className="font-mono-num">
+                            {lang === 'ar' ? `الدرس ${lesson.order}` : `Lesson ${lesson.order}`} · {lesson.estimatedMinutes}{' '}
+                            {lang === 'ar' ? 'د' : 'min'}
                           </span>
+                          <div className="flex items-center gap-2">
+                            {offlineInfo.available ? (
+                              <span className="text-[11px] text-cyan-600 dark:text-cyan-400 font-semibold flex items-center gap-1">
+                                <CheckCircle2 className="w-3 h-3" />
+                                {lang === 'ar' ? 'متاح أوفلاين' : 'Offline Ready'}
+                              </span>
+                            ) : (
+                              <span className="text-[11px] text-slate-400 font-mono-num">
+                                {formatBytes(lessonEst.totalBytes)}
+                              </span>
+                            )}
+                            {prog?.isCompleted && (
+                              <span className="text-emerald-600 dark:text-emerald-400 font-semibold flex items-center gap-1">
+                                <CheckCircle2 className="w-3.5 h-3.5" />
+                                {lang === 'ar' ? 'مكتمل' : 'Completed'}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <BilingualTitle
+                          ar={lesson.titleAr}
+                          en={lesson.titleEn}
+                          studyLang={studyLang}
+                          as="h3"
+                          className="text-base font-bold"
+                        />
+                        <p className="text-xs text-slate-600 dark:text-slate-400 line-clamp-2">
+                          {pickStudyText(lesson.introAr, lesson.introEn, studyLang)}
+                        </p>
+                        <p className="text-[11px] text-slate-500 dark:text-slate-400/80">
+                          {pickStudyText(lesson.sourceLabelAr, lesson.sourceLabelEn, studyLang)}
+                        </p>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => {
+                            setQuizAnswers({});
+                            setQuizSubmitted(false);
+                            onSelectLesson(lesson.id);
+                          }}
+                          className="flex-1 py-2.5 px-4 rounded-xl glass-btn-primary text-xs font-semibold cursor-pointer"
+                        >
+                          {prog?.isCompleted
+                            ? lang === 'ar'
+                              ? 'مراجعة الدرس'
+                              : 'Review Lesson'
+                            : lang === 'ar'
+                            ? 'بدء دراسة الدرس'
+                            : 'Study Full Lesson'}
+                        </button>
+
+                        {onDownloadPacksChange && (
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              if (lessonPack?.status === 'downloading') {
+                                pausePackageDownload(lessonPack.id);
+                              } else if (lessonPack?.status === 'completed') {
+                                await removeDownloadedPackage(lessonPack);
+                                upsertPack({ ...lessonPack, status: 'idle' });
+                              } else {
+                                await downloadContentPackage({
+                                  estimate: lessonEst,
+                                  allLessons: lessons,
+                                  allQuestions: questions,
+                                  onProgress: upsertPack,
+                                });
+                              }
+                            }}
+                            title={
+                              lessonPack?.status === 'completed'
+                                ? lang === 'ar'
+                                  ? 'حذف النسخة المحملة'
+                                  : 'Remove Offline Copy'
+                                : lang === 'ar'
+                                ? 'تحميل الدرس للعمل دون إنترنت'
+                                : 'Download Lesson Offline'
+                            }
+                            className={`p-2.5 rounded-xl glass-btn-secondary cursor-pointer ${
+                              offlineInfo.available ? 'text-emerald-500' : 'text-cyan-500'
+                            }`}
+                          >
+                            {lessonPack?.status === 'downloading' ? (
+                              <span className="text-[10px] font-mono-num font-bold">{lessonPack.progressPct}%</span>
+                            ) : lessonPack?.status === 'completed' ? (
+                              <Trash2 className="w-4 h-4 text-rose-500" />
+                            ) : (
+                              <Download className="w-4 h-4" />
+                            )}
+                          </button>
+                        )}
+
+                        {onToggleFavorite && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              onToggleFavorite({
+                                itemType: 'lesson',
+                                itemId: lesson.id,
+                                titleAr: lesson.titleAr,
+                                titleEn: lesson.titleEn,
+                              })
+                            }
+                            title={lang === 'ar' ? 'إضافة للمفضلة' : 'Bookmark Lesson'}
+                            className={`p-2.5 rounded-xl glass-btn-secondary cursor-pointer ${
+                              bookmarked ? 'text-amber-500' : 'text-slate-400'
+                            }`}
+                          >
+                            <Bookmark className={`w-4 h-4 ${bookmarked ? 'fill-amber-500' : ''}`} />
+                          </button>
                         )}
                       </div>
-                      <BilingualTitle
-                        ar={lesson.titleAr}
-                        en={lesson.titleEn}
-                        studyLang={studyLang}
-                        as="h3"
-                        className="text-base font-bold"
-                      />
-                      <p className="text-xs text-slate-600 dark:text-slate-400 line-clamp-2">
-                        {pickStudyText(lesson.introAr, lesson.introEn, studyLang)}
-                      </p>
-                      <p className="text-[11px] text-slate-500 dark:text-slate-400/80">
-                        {pickStudyText(lesson.sourceLabelAr, lesson.sourceLabelEn, studyLang)}
-                      </p>
                     </div>
-
-                    <button
-                      onClick={() => {
-                        setQuizAnswers({});
-                        setQuizSubmitted(false);
-                        onSelectLesson(lesson.id);
-                      }}
-                      className="w-full py-2.5 px-4 rounded-xl glass-btn-primary text-xs font-semibold cursor-pointer"
-                    >
-                      {prog?.isCompleted
-                        ? lang === 'ar'
-                          ? 'مراجعة الدرس'
-                          : 'Review Lesson'
-                        : lang === 'ar'
-                        ? 'بدء دراسة الدرس'
-                        : 'Study Full Lesson'}
-                    </button>
-                  </div>
-                );
-              })}
+                  );
+                })}
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     );
   }
@@ -256,7 +490,36 @@ export function CurriculumView({
             {lang === 'ar' ? 'العودة إلى قائمة الدروس' : 'Back to Curriculum'}
           </button>
 
-          <div className="flex flex-wrap items-center gap-2.5">
+          <div className="flex flex-wrap items-center gap-2">
+            {onToggleFavorite && (
+              <button
+                type="button"
+                onClick={() =>
+                  onToggleFavorite({
+                    itemType: 'lesson',
+                    itemId: activeLesson.id,
+                    titleAr: activeLesson.titleAr,
+                    titleEn: activeLesson.titleEn,
+                  })
+                }
+                className={`px-3 py-2 rounded-xl glass-btn-secondary text-xs font-semibold flex items-center gap-1.5 cursor-pointer ${
+                  isLessonBookmarked(activeLesson.id) ? 'text-amber-500' : ''
+                }`}
+              >
+                <Bookmark
+                  className={`w-3.5 h-3.5 ${isLessonBookmarked(activeLesson.id) ? 'fill-amber-500' : ''}`}
+                />
+                <span>
+                  {isLessonBookmarked(activeLesson.id)
+                    ? lang === 'ar'
+                      ? 'في المفضلة'
+                      : 'Bookmarked'
+                    : lang === 'ar'
+                    ? 'حفظ بالمفضلة'
+                    : 'Bookmark'}
+                </span>
+              </button>
+            )}
             <StudyLanguageSwitcher
               value={studyLang}
               onChange={onChangeStudyLang}
@@ -289,7 +552,7 @@ export function CurriculumView({
         </div>
 
         {activeLesson.resourceUrls && (activeLesson.resourceUrls.pdf || activeLesson.resourceUrls.video) && (
-          <div className="flex flex-wrap gap-3 pt-2">
+          <div className="flex flex-wrap items-center gap-3 pt-2">
             {activeLesson.resourceUrls.pdf && (
               <a
                 href={activeLesson.resourceUrls.pdf}
@@ -302,19 +565,86 @@ export function CurriculumView({
               </a>
             )}
             {activeLesson.resourceUrls.video && (
-              <a
-                href={activeLesson.resourceUrls.video}
-                target="_blank"
-                rel="noreferrer"
-                className="text-xs text-blue-600 dark:text-cyan-400 hover:underline flex items-center gap-1"
-              >
-                <ExternalLink className="w-3.5 h-3.5" />
-                {lang === 'ar' ? 'فيديو الشرح المرفق' : 'Attached Lesson Video'}
-              </a>
+              isOnline || isCacheableAssetUrl(activeLesson.resourceUrls.video) ? (
+                <a
+                  href={activeLesson.resourceUrls.video}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-xs text-blue-600 dark:text-cyan-400 hover:underline flex items-center gap-1"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  {lang === 'ar' ? 'فيديو الشرح المرفق' : 'Attached Lesson Video'}
+                </a>
+              ) : (
+                <span className="text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1">
+                  <WifiOff className="w-3.5 h-3.5" />
+                  {lang === 'ar'
+                    ? 'الفيديو الخارجي يتطلب اتصالًا بالإنترنت (الشرح والرسومات متاحة أوفلاين)'
+                    : 'External video requires internet (written lesson & diagrams available offline)'}
+                </span>
+              )
             )}
           </div>
         )}
       </div>
+
+      {/* Personal Offline Study Notes Card */}
+      {onSaveNote && (
+        <section className="rounded-2xl glass-card p-5 space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <h2 className="text-sm font-bold flex items-center gap-2">
+              <span className="glass-icon glass-icon-cyan w-7 h-7">
+                <StickyNote className="w-3.5 h-3.5" />
+              </span>
+              <span>{lang === 'ar' ? 'ملاحظاتي الشخصية على الدرس (تحفظ أوفلاين)' : 'My Lesson Notes (Saved Offline)'}</span>
+            </h2>
+            {!isOnline && (
+              <span className="text-[11px] text-amber-500 flex items-center gap-1">
+                <CloudOff className="w-3 h-3" />
+                {lang === 'ar' ? 'حفظ محلي فوري' : 'Saved Locally'}
+              </span>
+            )}
+          </div>
+          <textarea
+            rows={2}
+            value={noteDraft}
+            onChange={(e) => {
+              setNoteDraft(e.target.value);
+              setNoteSavedMsg(false);
+            }}
+            placeholder={
+              lang === 'ar'
+                ? 'اكتب ملخصًا أو ملاحظة مهمة لهذا الدرس وستبقى متاحة حتى دون إنترنت...'
+                : 'Write a personal takeaway or formula reminder for offline revision...'
+            }
+            className="w-full p-3 rounded-xl glass-input text-xs sm:text-sm"
+          />
+          <div className="flex items-center justify-between gap-2">
+            {noteSavedMsg ? (
+              <span className="text-xs text-emerald-500 font-medium">
+                {lang === 'ar' ? 'تم حفظ الملاحظة محليًا بنجاح' : 'Note saved locally'}
+              </span>
+            ) : (
+              <span />
+            )}
+            <button
+              type="button"
+              onClick={async () => {
+                await onSaveNote({
+                  itemType: 'lesson',
+                  itemId: activeLesson.id,
+                  title: pickStudyText(activeLesson.titleAr, activeLesson.titleEn, studyLang),
+                  content: noteDraft,
+                });
+                setNoteSavedMsg(true);
+              }}
+              className="px-3.5 py-1.5 rounded-xl glass-btn-primary text-xs font-semibold cursor-pointer"
+            >
+              {lang === 'ar' ? 'حفظ الملاحظة' : 'Save Note'}
+            </button>
+          </div>
+        </section>
+      )}
 
       {/* Section 1: Introduction & Objectives */}
       <section className="rounded-2xl glass-card p-6 space-y-4">

@@ -9,7 +9,8 @@ import {
 } from '../types/physics';
 import { mergeBilingualOptions, pickStudyText } from '../lib/bilingual';
 import { BilingualTextBlock, BilingualTitle, StudyLanguageSwitcher } from './BilingualBlock';
-import { Clock, RotateCcw, CheckCircle2, XCircle, Play } from 'lucide-react';
+import { ActiveExamSnapshot } from '../lib/offlineDb';
+import { Clock, CloudOff, Play, RotateCcw, CheckCircle2, XCircle } from 'lucide-react';
 import { evaluate } from 'mathjs';
 
 interface ExamsViewProps {
@@ -20,6 +21,10 @@ interface ExamsViewProps {
   questions: QuestionItem[];
   attempts: ExamAttempt[];
   onSaveAttempt: (attempt: ExamAttempt) => Promise<void>;
+  activeSnapshot?: ActiveExamSnapshot | null;
+  onSaveSnapshot?: (snapshot: ActiveExamSnapshot | null) => Promise<void>;
+  onExamActiveChange?: (active: boolean) => void;
+  isOnline?: boolean;
 }
 
 export function ExamsView({
@@ -30,6 +35,10 @@ export function ExamsView({
   questions,
   attempts,
   onSaveAttempt,
+  activeSnapshot,
+  onSaveSnapshot,
+  onExamActiveChange,
+  isOnline = true,
 }: ExamsViewProps) {
   const scopedExams = exams.filter((e) => e.track === profile.track && e.grade === profile.grade);
   const scopedQuestions = questions.filter((q) => q.track === profile.track && q.grade === profile.grade);
@@ -62,12 +71,38 @@ export function ExamsView({
   const [customShuffle, setCustomShuffle] = useState(true);
 
   useEffect(() => {
+    onExamActiveChange?.(Boolean(activeExam && !submittedResult));
+    return () => onExamActiveChange?.(false);
+  }, [activeExam, submittedResult, onExamActiveChange]);
+
+  useEffect(() => {
     if (!activeExam || submittedResult) return;
     const timer = setInterval(() => {
       setSecondsLeft((s) => (s > 0 ? s - 1 : 0));
     }, 1000);
     return () => clearInterval(timer);
   }, [activeExam?.attemptId, submittedResult]);
+
+  // Periodically save timer & answers snapshot so reload/offline exit resumes seamlessly
+  useEffect(() => {
+    if (!activeExam || submittedResult || !onSaveSnapshot) return;
+    if (secondsLeft > 0 && secondsLeft % 5 === 0) {
+      void onSaveSnapshot({
+        uid: profile.uid,
+        attemptId: activeExam.attemptId,
+        examId: activeExam.id,
+        title: activeExam.title,
+        track: profile.track === 'unset' ? 'thanawiya' : profile.track,
+        questionIds: activeExam.questions.map((q) => q.id),
+        durationMinutes: activeExam.durationMinutes,
+        secondsLeft,
+        lastTickAt: Date.now(),
+        answers,
+        examLang: activeExam.examLang,
+        startedAtMs: Date.now(),
+      });
+    }
+  }, [secondsLeft, activeExam, submittedResult, answers, profile.uid, profile.track, onSaveSnapshot]);
 
   useEffect(() => {
     if (activeExam && !submittedResult && secondsLeft === 0) {
@@ -84,10 +119,27 @@ export function ExamsView({
     chosenLang: StudyLanguage = examLang
   ) => {
     const attemptId = `att-${Date.now()}`;
+    const initialSeconds = durationMin * 60;
     setAnswers({});
     setSubmittedResult(null);
-    setSecondsLeft(durationMin * 60);
+    setSecondsLeft(initialSeconds);
     setActiveExam({ id: examId, title, questions: qList, durationMinutes: durationMin, attemptId, examLang: chosenLang });
+    if (onSaveSnapshot) {
+      await onSaveSnapshot({
+        uid: profile.uid,
+        attemptId,
+        examId,
+        title,
+        track: profile.track === 'unset' ? 'thanawiya' : profile.track,
+        questionIds: qList.map((q) => q.id),
+        durationMinutes: durationMin,
+        secondsLeft: initialSeconds,
+        lastTickAt: Date.now(),
+        answers: {},
+        examLang: chosenLang,
+        startedAtMs: Date.now(),
+      });
+    }
     await onSaveAttempt({
       id: attemptId,
       userId: profile.uid,
@@ -98,6 +150,26 @@ export function ExamsView({
       score: 0,
       maxScore: qList.length,
       answersJson: '{}',
+    });
+  };
+
+  const resumeSavedExam = (snap: ActiveExamSnapshot) => {
+    const restoredQs = snap.questionIds
+      .map((id) => questions.find((q) => q.id === id))
+      .filter((x): x is QuestionItem => Boolean(x));
+    const finalQs = restoredQs.length > 0 ? restoredQs : scopedQuestions;
+    if (finalQs.length === 0) return;
+
+    setSubmittedResult(null);
+    setAnswers(snap.answers || {});
+    setSecondsLeft(Math.max(10, snap.secondsLeft));
+    setActiveExam({
+      id: snap.examId,
+      title: snap.title,
+      questions: finalQs,
+      durationMinutes: snap.durationMinutes,
+      attemptId: snap.attemptId,
+      examLang: snap.examLang || examLang,
     });
   };
 
@@ -129,6 +201,22 @@ export function ExamsView({
     const next = { ...answers, [qId]: val };
     setAnswers(next);
     if (activeExam) {
+      if (onSaveSnapshot) {
+        void onSaveSnapshot({
+          uid: profile.uid,
+          attemptId: activeExam.attemptId,
+          examId: activeExam.id,
+          title: activeExam.title,
+          track: profile.track === 'unset' ? 'thanawiya' : profile.track,
+          questionIds: activeExam.questions.map((q) => q.id),
+          durationMinutes: activeExam.durationMinutes,
+          secondsLeft,
+          lastTickAt: Date.now(),
+          answers: next,
+          examLang: activeExam.examLang,
+          startedAtMs: Date.now(),
+        });
+      }
       await onSaveAttempt({
         id: activeExam.attemptId,
         userId: profile.uid,
@@ -170,6 +258,10 @@ export function ExamsView({
     const score = details.filter((d) => d.correct).length;
     setSubmittedResult({ score, maxScore: activeExam.questions.length, details });
 
+    if (onSaveSnapshot) {
+      await onSaveSnapshot(null);
+    }
+
     await onSaveAttempt({
       id: activeExam.attemptId,
       userId: profile.uid,
@@ -196,9 +288,17 @@ export function ExamsView({
         <div className="rounded-2xl glass-panel border p-5 flex flex-wrap items-center justify-between gap-4 sticky top-20 z-20">
           <div className="min-w-0">
             <h2 className="text-lg font-bold truncate">{activeExam.title}</h2>
-            <p className="text-xs text-slate-500 dark:text-slate-400 font-mono-num">
-              {activeExam.questions.length} {lang === 'ar' ? 'أسئلة' : 'questions'} ·{' '}
-              {lang === 'ar' ? 'يتم حفظ الإجابات تلقائيًا' : 'Auto-saving answers'}
+            <p className="text-xs text-slate-500 dark:text-slate-400 font-mono-num flex items-center gap-2">
+              <span>
+                {activeExam.questions.length} {lang === 'ar' ? 'أسئلة' : 'questions'} ·{' '}
+                {lang === 'ar' ? 'يتم حفظ الإجابات محليًا تلقائيًا' : 'Auto-saving locally'}
+              </span>
+              {!isOnline && (
+                <span className="text-amber-500 inline-flex items-center gap-1">
+                  <CloudOff className="w-3 h-3" />
+                  {lang === 'ar' ? 'أوفلاين' : 'Offline'}
+                </span>
+              )}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2.5">
@@ -364,6 +464,39 @@ export function ExamsView({
 
   return (
     <div className="space-y-6 max-w-5xl mx-auto">
+      {activeSnapshot && activeSnapshot.uid === profile.uid && (
+        <div className="rounded-2xl glass-card border border-amber-500/35 bg-amber-500/10 p-4 sm:p-5 flex flex-wrap items-center justify-between gap-4 glass-enter">
+          <div className="space-y-1">
+            <p className="text-xs font-semibold text-amber-600 dark:text-amber-400">
+              {lang === 'ar' ? 'امتحان غير مكتمل محفوظ محليًا' : 'Unfinished Exam Saved Locally'}
+            </p>
+            <h2 className="text-base font-bold">{activeSnapshot.title}</h2>
+            <p className="text-xs text-slate-600 dark:text-slate-300 font-mono-num">
+              {Object.keys(activeSnapshot.answers || {}).length} / {activeSnapshot.questionIds.length}{' '}
+              {lang === 'ar' ? 'إجابات محفوظة' : 'saved answers'} ·{' '}
+              {formatTimer(activeSnapshot.secondsLeft)} {lang === 'ar' ? 'متبقية' : 'remaining'}
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => onSaveSnapshot?.(null)}
+              className="px-3 py-2 rounded-xl glass-btn-secondary text-xs font-medium cursor-pointer"
+            >
+              {lang === 'ar' ? 'تجاهل' : 'Discard'}
+            </button>
+            <button
+              type="button"
+              onClick={() => resumeSavedExam(activeSnapshot)}
+              className="px-4 py-2 rounded-xl glass-btn-primary text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+            >
+              <Play className="w-3.5 h-3.5" />
+              <span>{lang === 'ar' ? 'استكمال الامتحان الآن' : 'Resume Exam'}</span>
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="rounded-2xl glass-card p-6 space-y-4">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
           <div>
@@ -372,8 +505,8 @@ export function ExamsView({
             </h1>
             <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">
               {lang === 'ar'
-                ? 'اختبارات مخصصة لصفك ونظامك التعليمي، مع اختيار لغة الأسئلة والتصحيح الرياضي الدقيق وحفظ المحاولات.'
-                : 'Track-scoped assessments with selectable question language, mathematical tolerance grading, and attempt history.'}
+                ? 'اختبارات مخصصة لصفك ونظامك التعليمي — تعمل بالكامل دون إنترنت مع حفظ تلقائي للإجابات والمزامنة عند عودة الشبكة.'
+                : 'Track-scoped assessments with full offline solving, automatic answer recovery, and automatic cloud sync.'}
             </p>
           </div>
           <StudyLanguageSwitcher

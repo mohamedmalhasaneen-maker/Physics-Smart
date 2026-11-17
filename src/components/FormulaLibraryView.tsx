@@ -3,16 +3,26 @@ import { FormulaItem, Language, StudyLanguage } from '../types/physics';
 import { LatexBlock, LatexInline } from './MathRenderer';
 import { BilingualTextBlock, BilingualTitle } from './BilingualBlock';
 import { pickStudyText } from '../lib/bilingual';
-import { Search, ArrowLeft, ArrowRight } from 'lucide-react';
+import { Search, ArrowLeft, ArrowRight, Bookmark } from 'lucide-react';
+import { FavoriteRecord } from '../lib/offlineDb';
 
 interface FormulaLibraryViewProps {
   lang: Language;
   studyLang: StudyLanguage;
   formulas: FormulaItem[];
   onOpenLesson: (lessonId: string) => void;
+  favorites?: FavoriteRecord[];
+  onToggleFavorite?: (item: { itemType: 'lesson' | 'formula' | 'question'; itemId: string; titleAr: string; titleEn: string }) => Promise<void>;
 }
 
-export function FormulaLibraryView({ lang, studyLang, formulas, onOpenLesson }: FormulaLibraryViewProps) {
+export function FormulaLibraryView({
+  lang,
+  studyLang,
+  formulas,
+  onOpenLesson,
+  favorites = [],
+  onToggleFavorite,
+}: FormulaLibraryViewProps) {
   const [search, setSearch] = useState('');
   const [cat, setCat] = useState<string>('all');
 
@@ -89,21 +99,44 @@ export function FormulaLibraryView({ lang, studyLang, formulas, onOpenLesson }: 
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-        {filtered.map((f) => (
+        {filtered.map((f) => {
+          const isFav = favorites.some((fav) => fav.itemType === 'formula' && fav.itemId === f.id);
+          return (
           <div
             key={f.id}
             className="rounded-2xl glass-card-interactive p-6 space-y-4"
           >
-            <div>
-              <BilingualTitle
-                ar={f.nameAr}
-                en={f.nameEn}
-                studyLang={studyLang}
-                as="h2"
-                className="text-lg font-bold"
-              />
-              <LatexBlock latex={f.latex} />
+            <div className="flex items-start justify-between gap-2">
+              <div className="flex-1 min-w-0">
+                <BilingualTitle
+                  ar={f.nameAr}
+                  en={f.nameEn}
+                  studyLang={studyLang}
+                  as="h2"
+                  className="text-lg font-bold"
+                />
+              </div>
+              {onToggleFavorite && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    onToggleFavorite({
+                      itemType: 'formula',
+                      itemId: f.id,
+                      titleAr: f.nameAr,
+                      titleEn: f.nameEn,
+                    })
+                  }
+                  title={lang === 'ar' ? 'حفظ القانون في المفضلة' : 'Bookmark Formula'}
+                  className={`p-2 rounded-xl glass-btn-secondary cursor-pointer shrink-0 ${
+                    isFav ? 'text-amber-500' : 'text-slate-400'
+                  }`}
+                >
+                  <Bookmark className={`w-4 h-4 ${isFav ? 'fill-amber-500' : ''}`} />
+                </button>
+              )}
             </div>
+            <LatexBlock latex={f.latex} />
 
             <div className="space-y-1.5 text-xs">
               <p className="font-semibold text-slate-500 dark:text-slate-400">{lang === 'ar' ? 'الرموز والوحدات:' : 'Symbols & Units:'}</p>
@@ -173,7 +206,8 @@ export function FormulaLibraryView({ lang, studyLang, formulas, onOpenLesson }: 
               </div>
             )}
           </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

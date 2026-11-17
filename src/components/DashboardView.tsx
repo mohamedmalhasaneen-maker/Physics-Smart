@@ -12,6 +12,7 @@ import {
 import { getGradeLabel, getTrackLabel } from '../data/tracks';
 import { pickStudyText } from '../lib/bilingual';
 import { BilingualTextBlock, BilingualTitle, StudyLanguageSwitcher } from './BilingualBlock';
+import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
 import {
   ArrowLeft,
   ArrowRight,
@@ -93,6 +94,37 @@ export function DashboardView({
 
   const todayTasks = studyTasks.filter((t) => !t.completed).slice(0, 4);
   const DirArrow = lang === 'ar' ? ArrowLeft : ArrowRight;
+
+  // 7-day activity data from progressMap
+  const chartData = React.useMemo(() => {
+    const days: Array<{ dateStr: string; label: string; studyMinutes: number; completedCount: number }> = [];
+    const now = new Date();
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date(now.getTime() - i * 24 * 60 * 60 * 1000);
+      const dateStr = d.toISOString().slice(0, 10);
+      const label = d.toLocaleDateString(lang === 'ar' ? 'ar-EG' : 'en-US', { weekday: 'short', month: 'numeric', day: 'numeric' });
+      days.push({ dateStr, label, studyMinutes: 0, completedCount: 0 });
+    }
+
+    Object.values(progressMap).forEach((p) => {
+      const ts = p.lastAccessedAt || p.updatedAt;
+      let dateKey = '';
+      if (ts && typeof ts === 'object' && 'seconds' in ts) {
+        dateKey = new Date(ts.seconds * 1000).toISOString().slice(0, 10);
+      } else if (typeof ts === 'string') {
+        dateKey = ts.slice(0, 10);
+      } else if (ts instanceof Date) {
+        dateKey = ts.toISOString().slice(0, 10);
+      }
+      const match = days.find((day) => day.dateStr === dateKey);
+      if (match) {
+        match.studyMinutes += p.studyMinutes || 15;
+        if (p.isCompleted) match.completedCount += 1;
+      }
+    });
+
+    return days;
+  }, [progressMap, lang]);
 
   const shortcuts: Array<{ id: NavSection; labelAr: string; labelEn: string; icon: React.ReactNode }> = [
     { id: 'curriculum', labelAr: 'المناهج والدروس', labelEn: 'Curriculum', icon: <BookOpen className="w-4 h-4" /> },
@@ -181,6 +213,64 @@ export function DashboardView({
           </div>
         </div>
         <StudyLanguageSwitcher value={studyLang} onChange={onChangeStudyLang} uiLang={lang} />
+      </section>
+
+      {/* 7-Day Study Activity Chart */}
+      <section className="rounded-2xl glass-card p-6 space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-base font-bold flex items-center gap-2.5">
+              <span className="glass-icon glass-icon-blue w-8 h-8">
+                <LineChart className="w-4 h-4" />
+              </span>
+              {lang === 'ar' ? 'نشاط المذاكرة خلال آخر 7 أيام' : '7-Day Study Activity & Consistency'}
+            </h2>
+            <p className="text-xs text-slate-600 dark:text-slate-400 mt-0.5">
+              {lang === 'ar'
+                ? 'تتبع دقائق المذاكرة وإنجاز الدروس يومياً لضمان الاستمرارية.'
+                : 'Track daily study duration and lesson progress for consistent learning.'}
+            </p>
+          </div>
+          <div className="text-xs font-mono-num font-semibold text-blue-600 dark:text-cyan-400 bg-blue-500/10 px-3 py-1.5 rounded-xl border border-blue-500/20">
+            {chartData.reduce((acc, d) => acc + d.studyMinutes, 0)} {lang === 'ar' ? 'دقيقة إجمالية' : 'total mins'}
+          </div>
+        </div>
+
+        <div className="h-48 w-full pt-2">
+          <ResponsiveContainer width="100%" height="100%">
+            <AreaChart data={chartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+              <defs>
+                <linearGradient id="studyMinsGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#06b6d4" stopOpacity={0.4} />
+                  <stop offset="95%" stopColor="#3b82f6" stopOpacity={0.0} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="currentColor" opacity={0.1} />
+              <XAxis dataKey="label" stroke="currentColor" opacity={0.5} fontSize={11} />
+              <YAxis stroke="currentColor" opacity={0.5} fontSize={11} allowDecimals={false} />
+              <Tooltip
+                contentStyle={{
+                  backgroundColor: 'rgba(15, 23, 42, 0.85)',
+                  backdropFilter: 'blur(8px)',
+                  borderRadius: '0.75rem',
+                  border: '1px solid rgba(255, 255, 255, 0.1)',
+                  color: '#fff',
+                  fontSize: '12px',
+                }}
+                formatter={(val: any) => [`${val} ${lang === 'ar' ? 'دقيقة' : 'mins'}`, lang === 'ar' ? 'وقت المذاكرة' : 'Study Time']}
+                labelStyle={{ fontWeight: 'bold', marginBottom: '2px' }}
+              />
+              <Area
+                type="monotone"
+                dataKey="studyMinutes"
+                stroke="#06b6d4"
+                strokeWidth={2.5}
+                fillOpacity={1}
+                fill="url(#studyMinsGrad)"
+              />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
       </section>
 
       {/* 4-column KPI strip */}

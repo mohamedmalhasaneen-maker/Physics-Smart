@@ -15,8 +15,21 @@ import {
   prepareAttachmentFile,
 } from '../lib/attachmentUtils';
 import { RichPhysicsText } from './MathRenderer';
+import { FORMULAS_SEED } from '../data/formulasSeed';
 import {
+  TutorOutboxItem,
+  enqueueTutorOutbox,
+  getTutorOutbox,
+  removeTutorOutbox,
+} from '../lib/offlineDb';
+import {
+  OfflineStudyMatch,
+  searchOfflinePhysicsKnowledge,
+} from '../lib/offlinePhysicsFallback';
+import {
+  BookOpen,
   Bot,
+  CloudOff,
   FileUp,
   History,
   Loader2,
@@ -34,6 +47,8 @@ interface TutorViewProps {
   initialLessonContext: Lesson | null;
   onSaveSession: (session: TutorSession) => Promise<void>;
   onDeleteSession: (sessionId: string) => Promise<void>;
+  isOnline?: boolean;
+  onOpenLesson?: (lessonId: string) => void;
 }
 
 export function TutorView({
@@ -45,6 +60,8 @@ export function TutorView({
   initialLessonContext,
   onSaveSession,
   onDeleteSession,
+  isOnline = true,
+  onOpenLesson,
 }: TutorViewProps) {
   const scopedLessons = useMemo(
     () => lessons.filter((l) => l.track === profile.track && l.grade === profile.grade),
@@ -72,12 +89,22 @@ export function TutorView({
   const [slowWait, setSlowWait] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [lastInteractionId, setLastInteractionId] = useState<string | null>(null);
+  const [outboxQueue, setOutboxQueue] = useState<TutorOutboxItem[]>([]);
+  const [offlineMatches, setOfflineMatches] = useState<OfflineStudyMatch[]>([]);
   const inFlightRef = useRef(false);
+  const activeAbortRef = useRef<AbortController | null>(null);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
+    getTutorOutbox(profile.uid).then(setOutboxQueue).catch(() => {});
+    return () => {
+      activeAbortRef.current?.abort();
+    };
+  }, [profile.uid]);
+
+  useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-  }, [messages.length, streamingText]);
+  }, [messages.length, streamingText, offlineMatches.length]);
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -126,7 +153,7 @@ export function TutorView({
     errorCode?: string,
     source?: string
   ): string => {
-    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
       return lang === 'ar'
         ? 'يبدو أن الاتصال بالإنترنت مقطوع حاليًا. تأكد من اتصالك بالشبكة ثم اضغط إعادة المحاولة، سؤالك ما زال محفوظًا.'
         : 'You appear to be offline. Check your connection and click Retry — your question is saved.';
@@ -253,6 +280,49 @@ export function TutorView({
     if (!rawTrimmed && !hasAttachment) return;
 
     const textToSend = rawTrimmed || (lang === 'ar' ? 'حلل المرفق التالي.' : 'Please analyze this attachment.');
+
+    // Graceful Offline Mode: queue text query & show cached local curriculum references
+    if (!isOnline || (typeof navigator !== 'undefined' && navigator.onLine === false)) {
+      const localMatches = searchOfflinePhysicsKnowledge({
+        query: textToSend,
+        lessons: scopedLessons,
+        formulas: FORMULAS_SEED,
+        studyLang: tutorLang,
+      });
+      setOfflineMatches(localMatches);
+
+      if (hasAttachment) {
+        setErrorMsg(
+          lang === 'ar'
+            ? 'تحليل الصور وملفات PDF بالذكاء الاصطناعي يتطلب اتصالًا بالإنترنت. يمكنك مراجعة الدروس والقوانين المحفوظة حتى عودة الشبكة.'
+            : 'AI analysis of images & PDFs requires an internet connection. Offline curriculum references remain available.'
+        );
+        return;
+      }
+
+      const queuedItem: TutorOutboxItem = {
+        id: `outbox-${Date.now()}`,
+        uid: profile.uid,
+        sessionId: activeSessionId,
+        message: textToSend,
+        mode,
+        language: tutorLang,
+        level,
+        style,
+        detail,
+        track: profile.track,
+        grade: profile.grade,
+        lessonContext: compactLessonContext,
+        createdAt: Date.now(),
+        status: 'queued',
+      };
+      await enqueueTutorOutbox(queuedItem);
+      setOutboxQueue((prev) => [...prev, queuedItem]);
+      setInputText('');
+      setErrorMsg('');
+      return;
+    }
+
     const previousMessages = messages;
     const savedInputText = inputText;
     const savedAttachment = attachment;
@@ -268,6 +338,7 @@ export function TutorView({
     const nextMessages = [...previousMessages, userMsg];
 
     inFlightRef.current = true;
+    setOfflineMatches([]);
     setMessages(nextMessages);
     setStreamingText('');
     setInputText('');
@@ -282,6 +353,7 @@ export function TutorView({
     }, 1800);
 
     const controller = new AbortController();
+    activeAbortRef.current = controller;
     const abortTimer = window.setTimeout(() => controller.abort(), 90000);
 
     try {
@@ -694,6 +766,55 @@ export function TutorView({
 
       {/* Main Chat Panel */}
       <div className="lg:col-span-8 rounded-2xl glass-card flex flex-col min-h-[580px] max-h-[760px] overflow-hidden">
+        {!isOnline && (
+          <div className="px-4 py-2.5 border-b border-amber-500/25 bg-amber-500/10 text-xs text-amber-700 dark:text-amber-300 flex flex-wrap items-center justify-between gap-2">
+            <span className="flex items-center gap-2 font-medium">
+              <CloudOff className="w-4 h-4 shrink-0" />
+              {lang === 'ar'
+                ? 'أنت الآن دون اتصال بالإنترنت: المدرس الذكي الحي يتطلب شبكة، لكن يمكنك تصفح محادثاتك السابقة والبحث الفوري في الدروس، أو حفظ أسئلتك لإرسالها فور عودة الإنترنت.'
+                : 'You are offline: live AI responses require internet, but past chats & local curriculum search work offline, and new questions are queued safely.'}
+            </span>
+          </div>
+        )}
+
+        {isOnline && outboxQueue.length > 0 && (
+          <div className="px-4 py-2.5 border-b border-cyan-500/25 bg-cyan-500/10 text-xs text-cyan-700 dark:text-cyan-300 flex flex-wrap items-center justify-between gap-2">
+            <span className="font-medium">
+              {lang === 'ar'
+                ? `لديك ${outboxQueue.length} سؤال محفوظ أثناء انقطاع الإنترنت وجاهز للإرسال الآن.`
+                : `You have ${outboxQueue.length} queued offline question(s) ready to send.`}
+            </span>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                disabled={loading}
+                onClick={async () => {
+                  const first = outboxQueue[0];
+                  if (!first) return;
+                  await removeTutorOutbox(first.id);
+                  setOutboxQueue((prev) => prev.filter((item) => item.id !== first.id));
+                  await sendMessage(undefined, first.message);
+                }}
+                className="px-3 py-1 rounded-lg glass-btn-primary text-[11px] font-semibold cursor-pointer disabled:opacity-50"
+              >
+                {lang === 'ar' ? 'إرسال أول سؤال الآن' : 'Send Next Queued'}
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  for (const item of outboxQueue) {
+                    await removeTutorOutbox(item.id);
+                  }
+                  setOutboxQueue([]);
+                }}
+                className="px-2.5 py-1 rounded-lg glass-btn-secondary text-[11px] cursor-pointer"
+              >
+                {lang === 'ar' ? 'مسح' : 'Clear'}
+              </button>
+            </div>
+          </div>
+        )}
+
         <div className="flex-1 p-5 overflow-y-auto space-y-4">
           {messages.length === 0 ? (
             <div className="h-full flex flex-col items-center justify-center text-center max-w-md mx-auto py-12 space-y-3">
@@ -767,6 +888,62 @@ export function TutorView({
             <div className="flex justify-start">
               <div dir="auto" className="max-w-[88%] rounded-2xl px-4 py-3 glass-subcard">
                 <RichPhysicsText text={streamingText} />
+              </div>
+            </div>
+          )}
+          {outboxQueue.length > 0 && (
+            <div className="space-y-2 pt-2">
+              {outboxQueue.map((qItem) => (
+                <div key={qItem.id} className="flex justify-end">
+                  <div dir="auto" className="max-w-[85%] rounded-2xl px-4 py-2.5 border border-amber-500/35 bg-amber-500/12 text-xs space-y-1">
+                    <div className="flex items-center justify-between gap-3 text-[11px] text-amber-600 dark:text-amber-400 font-semibold">
+                      <span className="flex items-center gap-1">
+                        <CloudOff className="w-3 h-3" />
+                        {lang === 'ar' ? 'محفوظ للإرسال عند الاتصال' : 'Queued for Online Sync'}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          await removeTutorOutbox(qItem.id);
+                          setOutboxQueue((prev) => prev.filter((x) => x.id !== qItem.id));
+                        }}
+                        className="text-rose-500 hover:underline cursor-pointer"
+                      >
+                        {lang === 'ar' ? 'إلغاء' : 'Remove'}
+                      </button>
+                    </div>
+                    <p className="text-sm text-slate-800 dark:text-slate-100">{qItem.message}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          {offlineMatches.length > 0 && (
+            <div className="rounded-2xl glass-subcard p-4 border border-cyan-500/30 space-y-2.5 text-xs">
+              <p className="font-bold text-cyan-600 dark:text-cyan-400 flex items-center gap-1.5">
+                <BookOpen className="w-4 h-4" />
+                {lang === 'ar'
+                  ? 'نتائج سريعة من المنهج والقوانين المحفوظة محليًا (وضع المراجعة دون إنترنت):'
+                  : 'Offline Study Fallback (Matched Local Lessons & Formulas):'}
+              </p>
+              <div className="space-y-2">
+                {offlineMatches.map((m, idx) => (
+                  <div key={idx} className="rounded-xl bg-white/40 dark:bg-white/[0.03] p-3 space-y-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-semibold text-sm">{m.title}</span>
+                      {m.lessonId && onOpenLesson && (
+                        <button
+                          type="button"
+                          onClick={() => onOpenLesson(m.lessonId!)}
+                          className="text-blue-600 dark:text-cyan-400 hover:underline shrink-0 cursor-pointer"
+                        >
+                          {lang === 'ar' ? 'فتح الدرس' : 'Open Lesson'}
+                        </button>
+                      )}
+                    </div>
+                    {m.snippet && <p className="text-slate-600 dark:text-slate-300">{m.snippet}</p>}
+                  </div>
+                ))}
               </div>
             </div>
           )}
