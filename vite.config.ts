@@ -36,6 +36,12 @@ export default defineConfig(() => {
               type: 'image/png',
               purpose: 'any',
             },
+            {
+              src: '/assets/aistudio/__________________________425160ec.png',
+              sizes: '1254x1254',
+              type: 'image/png',
+              purpose: 'maskable',
+            },
           ],
         },
         workbox: {
