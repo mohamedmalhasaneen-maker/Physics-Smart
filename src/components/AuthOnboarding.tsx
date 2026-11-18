@@ -479,9 +479,11 @@ export function AuthOnboarding({
       <header className="w-full border-b glass-topbar sticky top-0 z-30">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-8">
           <div className="flex items-center gap-3 whitespace-nowrap shrink-0">
-            <span className="glass-icon glass-icon-cyan w-9 h-9">
-              <Atom className="w-5 h-5" />
-            </span>
+            <img
+              src="/assets/aistudio/__________________________425160ec.png"
+              alt="Physics Smart"
+              className="w-10 h-10 object-contain shrink-0"
+            />
             <span className="font-display text-lg font-bold tracking-tight">Physics Smart</span>
           </div>
 
@@ -566,13 +568,20 @@ export function AuthOnboarding({
             {/* Auth Card */}
             <div className="lg:col-span-5 rounded-2xl glass-panel border p-6 sm:p-8 flex flex-col justify-center">
               <div className="mb-5">
-                <h2 className="text-xl font-bold mb-1">
-                  {authTab === 'signin'
-                    ? t.auth.signInTab
-                    : authTab === 'signup'
-                      ? t.auth.signUpTab
-                      : t.auth.resetTab}
-                </h2>
+                <div className="flex items-center gap-3 mb-2">
+                  <img
+                    src="/assets/aistudio/__________________________425160ec.png"
+                    alt="Physics Smart"
+                    className="w-11 h-11 object-contain shrink-0"
+                  />
+                  <h2 className="text-xl font-bold">
+                    {authTab === 'signin'
+                      ? t.auth.signInTab
+                      : authTab === 'signup'
+                        ? t.auth.signUpTab
+                        : t.auth.resetTab}
+                  </h2>
+                </div>
                 <p className="text-xs text-slate-500 dark:text-slate-400">
                   {authTab === 'signin'
                     ? lang === 'ar'

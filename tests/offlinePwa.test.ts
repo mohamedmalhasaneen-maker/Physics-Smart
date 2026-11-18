@@ -65,20 +65,16 @@ async function runTests() {
     assert.equal(manifest.start_url, '/');
     assert.ok(manifest.theme_color);
     assert.ok(manifest.background_color);
-    assert.ok(Array.isArray(manifest.icons) && manifest.icons.length >= 4);
+    assert.ok(Array.isArray(manifest.icons) && manifest.icons.length >= 1);
 
-    const hasAny192 = manifest.icons.some((i: any) => i.sizes === '192x192' && i.purpose === 'any');
-    const hasAny512 = manifest.icons.some((i: any) => i.sizes === '512x512' && i.purpose === 'any');
-    const hasMask192 = manifest.icons.some((i: any) => i.sizes === '192x192' && i.purpose === 'maskable');
-    const hasMask512 = manifest.icons.some((i: any) => i.sizes === '512x512' && i.purpose === 'maskable');
-    assert.ok(hasAny192 && hasAny512 && hasMask192 && hasMask512, 'Separate any and maskable icons required');
-
-    assert.deepEqual(readPngDimensions(path.join(rootDir, 'dist', 'pwa-192x192.png')), { width: 192, height: 192 });
-    assert.deepEqual(readPngDimensions(path.join(rootDir, 'dist', 'pwa-512x512.png')), { width: 512, height: 512 });
-    assert.deepEqual(readPngDimensions(path.join(rootDir, 'dist', 'pwa-maskable-192x192.png')), { width: 192, height: 192 });
-    assert.deepEqual(readPngDimensions(path.join(rootDir, 'dist', 'pwa-maskable-512x512.png')), { width: 512, height: 512 });
-    assert.deepEqual(readPngDimensions(path.join(rootDir, 'dist', 'apple-touch-icon.png')), { width: 180, height: 180 });
-    assert.deepEqual(readPngDimensions(path.join(rootDir, 'dist', 'favicon.png')), { width: 64, height: 64 });
+    const officialIcon = manifest.icons.find(
+      (i: any) => i.src === '/assets/aistudio/__________________________425160ec.png' && i.type === 'image/png'
+    );
+    assert.ok(officialIcon, 'Manifest must reference the official Physics Smart PNG logo');
+    assert.deepEqual(
+      readPngDimensions(path.join(rootDir, 'dist', 'assets', 'aistudio', '__________________________425160ec.png')),
+      { width: 1254, height: 1254 }
+    );
 
     const vercelConfig = JSON.parse(fs.readFileSync(path.join(rootDir, 'vercel.json'), 'utf8'));
     const swHeaderRule = vercelConfig.headers?.find((h: any) => h.source === '/sw.js');

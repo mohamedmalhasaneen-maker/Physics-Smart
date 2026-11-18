@@ -116,7 +116,6 @@ import {
   subscribeSyncStatus,
 } from './lib/offlineSync';
 import {
-  Atom,
   BarChart3,
   BookOpen,
   Bot,
@@ -2038,9 +2037,11 @@ export default function App() {
       <div className="min-h-screen relative physics-space-canvas physics-grid-bg flex items-center justify-center text-slate-900 dark:text-slate-100">
         <PhysicsAmbientBg />
         <div className="relative z-10 glass-card rounded-2xl px-6 py-4 flex items-center gap-3 text-sm font-medium">
-          <span className="glass-icon glass-icon-cyan w-9 h-9">
-            <Atom className="w-5 h-5 animate-spin" />
-          </span>
+          <img
+            src="/assets/aistudio/__________________________425160ec.png"
+            alt="Physics Smart"
+            className="w-12 h-12 object-contain shrink-0"
+          />
           <span>{t.common.loading}</span>
         </div>
       </div>
@@ -2127,9 +2128,11 @@ export default function App() {
 
   const lazyFallback = (
     <div className="glass-card rounded-2xl p-8 flex items-center justify-center gap-3 text-sm font-medium min-h-[260px]">
-      <span className="glass-icon glass-icon-cyan w-9 h-9">
-        <Atom className="w-5 h-5 animate-spin" />
-      </span>
+      <img
+        src="/assets/aistudio/__________________________425160ec.png"
+        alt="Physics Smart"
+        className="w-12 h-12 object-contain shrink-0"
+      />
       <span>{t.common.loading}</span>
     </div>
   );
@@ -2141,9 +2144,11 @@ export default function App() {
       {/* Desktop Sidebar (260px) */}
       <aside className="hidden lg:flex w-64 shrink-0 flex-col border-e glass-sidebar sticky top-0 h-screen z-20">
         <div className="h-16 px-5 flex items-center gap-3 border-b border-slate-200/70 dark:border-white/10">
-          <span className="glass-icon glass-icon-cyan w-9 h-9 shrink-0">
-            <Atom className="w-5 h-5" />
-          </span>
+          <img
+            src="/assets/aistudio/__________________________425160ec.png"
+            alt="Physics Smart"
+            className="w-10 h-10 object-contain shrink-0"
+          />
           <span className="font-display text-lg font-bold tracking-tight whitespace-nowrap">Physics Smart</span>
         </div>
 
@@ -2218,9 +2223,11 @@ export default function App() {
           <div className="relative w-72 max-w-[85vw] glass-modal h-full flex flex-col p-4 z-10 overflow-y-auto glass-enter">
             <div className="flex items-center justify-between pb-4 border-b border-slate-200/70 dark:border-white/10">
               <div className="flex items-center gap-2.5">
-                <span className="glass-icon glass-icon-cyan w-8 h-8">
-                  <Atom className="w-4 h-4" />
-                </span>
+                <img
+                  src="/assets/aistudio/__________________________425160ec.png"
+                  alt="Physics Smart"
+                  className="w-9 h-9 object-contain shrink-0"
+                />
                 <span className="font-display font-bold">Physics Smart</span>
               </div>
               <button onClick={() => setMobileMenuOpen(false)} className="p-1.5 rounded-lg glass-btn-secondary">
@@ -2283,16 +2290,34 @@ export default function App() {
       <div className="relative z-10 flex-1 flex flex-col min-w-0">
         {/* Top Bar: Clean Breadcrumb + Offline Status / PWA Install + Language/Theme Controls */}
         <header className="h-16 px-4 sm:px-6 border-b glass-topbar sticky top-0 z-30 flex items-center justify-between gap-3">
-          <div className="flex items-center gap-3 min-w-0">
+          <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
             <button
               onClick={() => setMobileMenuOpen(true)}
-              className="lg:hidden p-2 rounded-xl glass-btn-secondary"
+              className="lg:hidden p-2 rounded-xl glass-btn-secondary shrink-0"
               aria-label="Menu"
             >
               <Menu className="w-4 h-4" />
             </button>
-            <div className="min-w-0">
-              <p className="text-xs font-medium text-slate-600 dark:text-slate-300 truncate">
+            <div className="flex flex-col justify-center min-w-0">
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveSection('dashboard');
+                  setSelectedLessonId(null);
+                }}
+                className="flex items-center gap-2 shrink-0 cursor-pointer group text-start"
+                title="Physics Smart"
+              >
+                <img
+                  src="/assets/aistudio/__________________________425160ec.png"
+                  alt="Physics Smart"
+                  className="w-9 h-9 object-contain shrink-0"
+                />
+                <span className="font-display text-sm sm:text-base font-bold leading-tight tracking-tight text-slate-900 dark:text-white whitespace-nowrap">
+                  Physics Smart
+                </span>
+              </button>
+              <p className="text-[10px] sm:text-[11px] leading-tight font-medium text-slate-500 dark:text-slate-400 truncate mt-0.5">
                 {trackLabel} · {gradeLabel}
               </p>
             </div>
