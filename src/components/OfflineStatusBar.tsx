@@ -91,7 +91,7 @@ export function OfflineStatusBar({
 
   return (
     <>
-      <div className="flex items-center gap-1.5 sm:gap-2">
+      <div className="flex items-center gap-2 shrink-0">
         {/* Connectivity & Sync State Pill */}
         <button
           type="button"
@@ -101,7 +101,7 @@ export function OfflineStatusBar({
               ? 'حالة الاتصال والمزامنة وإدارة التخزين'
               : 'Connectivity, sync queue & storage status'
           }
-          className={`px-2.5 py-1.5 rounded-xl border text-[11px] font-semibold flex items-center gap-1.5 transition-all cursor-pointer whitespace-nowrap ${statusTone}`}
+          className={`min-w-[40px] min-h-[40px] lg:min-w-0 lg:min-h-0 px-2.5 py-2 lg:py-1.5 rounded-xl border backdrop-blur-md text-[11px] font-semibold flex items-center justify-center gap-1.5 transition-all duration-150 active:scale-95 cursor-pointer whitespace-nowrap ${statusTone}`}
         >
           {statusIcon}
           <span className="hidden sm:inline">{statusText}</span>
@@ -112,9 +112,9 @@ export function OfflineStatusBar({
           type="button"
           onClick={() => onOpenOfflineCenter('downloads')}
           title={lang === 'ar' ? 'مكتبة أوفلاين وإدارة التخزين والمفضلة' : 'Offline Downloads, Storage & Saved'}
-          className="px-2.5 py-1.5 rounded-xl glass-btn-secondary text-[11px] font-semibold flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+          className="min-w-[40px] min-h-[40px] lg:min-w-0 lg:min-h-0 px-2.5 py-2 lg:py-1.5 rounded-xl glass-btn-secondary text-[11px] font-semibold flex items-center justify-center gap-1.5 transition-all duration-150 active:scale-95 cursor-pointer whitespace-nowrap"
         >
-          <HardDrive className="w-3.5 h-3.5 text-blue-600 dark:text-cyan-400" />
+          <HardDrive className="w-4 h-4 lg:w-3.5 lg:h-3.5 text-blue-600 dark:text-cyan-400" />
           <span className="hidden xl:inline">
             {lang === 'ar' ? 'التحميلات أوفلاين' : 'Offline Pack'}
           </span>
@@ -131,9 +131,9 @@ export function OfflineStatusBar({
             type="button"
             onClick={handleInstallClick}
             title={lang === 'ar' ? 'تثبيت التطبيق على جهازك' : 'Install Physics Smart App'}
-            className="px-2.5 py-1.5 rounded-xl glass-btn-primary text-[11px] font-semibold flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+            className="min-w-[40px] min-h-[40px] lg:min-w-0 lg:min-h-0 px-2.5 py-2 lg:py-1.5 rounded-xl glass-btn-primary text-[11px] font-semibold flex items-center justify-center gap-1.5 transition-all duration-150 active:scale-95 cursor-pointer whitespace-nowrap"
           >
-            <Download className="w-3.5 h-3.5" />
+            <Download className="w-4 h-4 lg:w-3.5 lg:h-3.5" />
             <span className="hidden md:inline">
               {lang === 'ar' ? 'تثبيت التطبيق' : 'Install App'}
             </span>

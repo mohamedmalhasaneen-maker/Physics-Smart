@@ -2289,41 +2289,46 @@ export default function App() {
       {/* Main Content Area */}
       <div className="relative z-10 flex-1 flex flex-col min-w-0">
         {/* Top Bar: Clean Breadcrumb + Offline Status / PWA Install + Language/Theme Controls */}
-        <header className="h-16 px-4 sm:px-6 border-b glass-topbar sticky top-0 z-30 flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
+        <header className="px-3.5 py-2.5 sm:px-5 lg:py-0 lg:h-16 lg:px-6 border-b glass-topbar sticky top-0 z-30 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-2.5 lg:gap-4">
+          {/* Start Zone: Mobile Brand Identity (+ Independent Menu Button on Mobile) */}
+          <div className="flex items-center justify-between lg:justify-start gap-2.5 sm:gap-3 min-w-0 w-full lg:w-auto">
             <button
-              onClick={() => setMobileMenuOpen(true)}
-              className="lg:hidden p-2 rounded-xl glass-btn-secondary shrink-0"
-              aria-label="Menu"
+              type="button"
+              onClick={() => {
+                setActiveSection('dashboard');
+                setSelectedLessonId(null);
+              }}
+              className="flex items-center gap-2.5 min-w-0 cursor-pointer group text-start active:scale-[0.98] transition-transform"
+              title="Physics Smart"
             >
-              <Menu className="w-4 h-4" />
-            </button>
-            <div className="flex flex-col justify-center min-w-0">
-              <button
-                type="button"
-                onClick={() => {
-                  setActiveSection('dashboard');
-                  setSelectedLessonId(null);
-                }}
-                className="flex items-center gap-2 shrink-0 cursor-pointer group text-start"
-                title="Physics Smart"
-              >
-                <img
-                  src="/assets/aistudio/__________________________425160ec.png"
-                  alt="Physics Smart"
-                  className="w-9 h-9 object-contain shrink-0"
-                />
-                <span className="font-display text-sm sm:text-base font-bold leading-tight tracking-tight text-slate-900 dark:text-white whitespace-nowrap">
+              <img
+                src="/assets/aistudio/__________________________425160ec.png"
+                alt="Physics Smart"
+                className="w-9 h-9 sm:w-10 sm:h-10 object-contain shrink-0"
+              />
+              <div className="flex flex-col justify-center min-w-0">
+                <span className="font-display text-[15px] sm:text-base font-bold leading-tight tracking-tight text-slate-900 dark:text-white whitespace-nowrap">
                   Physics Smart
                 </span>
-              </button>
-              <p className="text-[10px] sm:text-[11px] leading-tight font-medium text-slate-500 dark:text-slate-400 truncate mt-0.5">
-                {trackLabel} · {gradeLabel}
-              </p>
-            </div>
+                <p className="text-[11px] leading-tight font-medium text-slate-500 dark:text-slate-400 truncate mt-0.5">
+                  {trackLabel} · {gradeLabel}
+                </p>
+              </div>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setMobileMenuOpen(true)}
+              className="lg:hidden w-10 h-10 rounded-xl glass-btn-secondary flex items-center justify-center shrink-0 active:scale-95 transition-all duration-150 cursor-pointer"
+              aria-label="Menu"
+              title={lang === 'ar' ? 'القائمة' : 'Menu'}
+            >
+              <Menu className="w-5 h-5 text-slate-700 dark:text-slate-200" />
+            </button>
           </div>
 
-          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+          {/* End Zone: Row 2 on Mobile (Independent Glass Buttons), Right Group on Desktop */}
+          <div className="flex items-center justify-between lg:justify-end flex-wrap lg:flex-nowrap gap-2 lg:gap-2.5 pt-2 lg:pt-0 border-t lg:border-t-0 border-slate-200/60 dark:border-white/10 w-full lg:w-auto shrink-0">
             <OfflineStatusBar
               lang={lang}
               isOnline={isOnline}
@@ -2339,40 +2344,82 @@ export default function App() {
               onTriggerSync={handleTriggerSync}
               onOpenOfflineCenter={openOfflineCenter}
             />
-            <div className="hidden md:flex items-center">
-              <StudyLanguageSwitcher
-                value={studyLang}
-                onChange={handleChangeStudyLang}
-                uiLang={lang}
-                compact
-              />
+
+            <span className="hidden lg:inline-block h-5 w-px bg-slate-200/80 dark:bg-white/10 shrink-0" />
+
+            {/* Language Controls + Mobile Independent Display Buttons */}
+            <div className="flex items-center gap-2 lg:gap-1.5 shrink-0">
+              <div className="hidden md:flex items-center">
+                <StudyLanguageSwitcher
+                  value={studyLang}
+                  onChange={handleChangeStudyLang}
+                  uiLang={lang}
+                  compact
+                />
+              </div>
+              <button
+                type="button"
+                onClick={handleToggleLang}
+                className="min-h-[40px] min-w-[40px] lg:min-h-0 lg:min-w-0 px-2.5 sm:px-3 py-2 lg:py-1.5 rounded-xl glass-btn-secondary text-xs font-semibold lg:font-medium flex items-center justify-center gap-1.5 whitespace-nowrap active:scale-95 transition-all duration-150 cursor-pointer"
+                title={t.common.switchLang}
+              >
+                <Globe className="w-4 h-4 lg:w-3.5 lg:h-3.5 text-blue-600 dark:text-cyan-400 shrink-0" />
+                <span className="sm:hidden text-[11px]">{lang === 'ar' ? 'EN' : 'عربي'}</span>
+                <span className="hidden sm:inline">{t.common.switchLang}</span>
+              </button>
+
+              {/* Mobile-only: Completely independent glass buttons for Fullscreen & Theme */}
+              <button
+                type="button"
+                onClick={toggleFullscreen}
+                className="lg:hidden w-10 h-10 rounded-xl glass-btn-secondary flex items-center justify-center shrink-0 active:scale-95 transition-all duration-150 cursor-pointer"
+                title={lang === 'ar' ? 'ملء الشاشة' : 'Toggle Fullscreen'}
+                aria-label="Toggle Fullscreen"
+              >
+                {isFullscreen ? (
+                  <Minimize2 className="w-4 h-4 text-blue-600 dark:text-cyan-400" />
+                ) : (
+                  <Maximize2 className="w-4 h-4 text-blue-600 dark:text-cyan-400" />
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={() => setTheme((th) => (th === 'dark' ? 'light' : 'dark'))}
+                className="lg:hidden w-10 h-10 rounded-xl glass-btn-secondary flex items-center justify-center shrink-0 active:scale-95 transition-all duration-150 cursor-pointer"
+                title={theme === 'dark' ? (lang === 'ar' ? 'الوضع النهاري' : 'Light Mode') : (lang === 'ar' ? 'الوضع الليلي' : 'Dark Mode')}
+                aria-label="Theme toggle"
+              >
+                {theme === 'dark' ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4 text-slate-700" />}
+              </button>
             </div>
-            <button
-              onClick={handleToggleLang}
-              className="px-3 py-1.5 rounded-xl glass-btn-secondary text-xs font-medium flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
-            >
-              <Globe className="w-3.5 h-3.5 text-blue-600 dark:text-cyan-400" />
-              <span className="hidden sm:inline">{t.common.switchLang}</span>
-            </button>
-            <button
-              onClick={toggleFullscreen}
-              className="p-2 rounded-xl glass-btn-secondary cursor-pointer"
-              title={lang === 'ar' ? 'ملء الشاشة' : 'Toggle Fullscreen'}
-              aria-label="Toggle Fullscreen"
-            >
-              {isFullscreen ? (
-                <Minimize2 className="w-4 h-4 text-blue-600 dark:text-cyan-400" />
-              ) : (
-                <Maximize2 className="w-4 h-4 text-blue-600 dark:text-cyan-400" />
-              )}
-            </button>
-            <button
-              onClick={() => setTheme((th) => (th === 'dark' ? 'light' : 'dark'))}
-              className="p-2 rounded-xl glass-btn-secondary cursor-pointer"
-              aria-label="Theme toggle"
-            >
-              {theme === 'dark' ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4 text-slate-700" />}
-            </button>
+
+            <span className="hidden lg:inline-block h-5 w-px bg-slate-200/80 dark:bg-white/10 shrink-0" />
+
+            {/* Desktop Display Controls: Preserved Unchanged */}
+            <div className="hidden lg:flex items-center gap-0.5 p-0.5 rounded-xl bg-slate-100/80 dark:bg-white/[0.05] border border-slate-200/70 dark:border-white/10 shrink-0">
+              <button
+                type="button"
+                onClick={toggleFullscreen}
+                className="p-1.5 rounded-lg hover:bg-white/80 dark:hover:bg-white/10 transition-colors cursor-pointer"
+                title={lang === 'ar' ? 'ملء الشاشة' : 'Toggle Fullscreen'}
+                aria-label="Toggle Fullscreen"
+              >
+                {isFullscreen ? (
+                  <Minimize2 className="w-4 h-4 text-blue-600 dark:text-cyan-400" />
+                ) : (
+                  <Maximize2 className="w-4 h-4 text-blue-600 dark:text-cyan-400" />
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={() => setTheme((th) => (th === 'dark' ? 'light' : 'dark'))}
+                className="p-1.5 rounded-lg hover:bg-white/80 dark:hover:bg-white/10 transition-colors cursor-pointer"
+                title={theme === 'dark' ? (lang === 'ar' ? 'الوضع النهاري' : 'Light Mode') : (lang === 'ar' ? 'الوضع الليلي' : 'Dark Mode')}
+                aria-label="Theme toggle"
+              >
+                {theme === 'dark' ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4 text-slate-700" />}
+              </button>
+            </div>
           </div>
         </header>
 
