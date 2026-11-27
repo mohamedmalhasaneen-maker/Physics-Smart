@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import vm from 'node:vm';
 import { CURRICULUM_SEED } from '../src/data/curriculumSeed';
 import { FORMULAS_SEED } from '../src/data/formulasSeed';
 import { QUESTIONS_SEED } from '../src/data/questionsSeed';
@@ -87,19 +88,200 @@ async function runTests() {
     console.log('✓ Test 1 passed: Manifest, PNG icons & Vercel SW no-cache headers verified');
   }
 
-  // Test 2: Service Worker precache, runtime caching & code splitting verification
+  // Test 2: Service Worker precache, VM boot safety, runtime caching & code splitting verification
   {
     const swPath = path.join(rootDir, 'dist', 'sw.js');
     assert.ok(fs.existsSync(swPath), 'dist/sw.js must exist');
+    assert.ok(fs.existsSync(path.join(rootDir, 'dist', 'offline.html')), 'dist/offline.html must exist');
     const swCode = fs.readFileSync(swPath, 'utf8');
 
-    assert.ok(swCode.includes('precacheAndRoute'), 'SW must use precacheAndRoute');
     assert.ok(swCode.includes('index.html'), 'SW must precache index.html');
+    assert.ok(swCode.includes('offline.html'), 'SW must precache offline.html fallback');
     assert.ok(swCode.includes('KaTeX_'), 'SW must precache KaTeX math fonts for offline equations');
+    assert.ok(swCode.includes('hero_physics_observatory_'), 'SW must precache bundled hero observatory image');
+    assert.ok(swCode.includes('track_mechanics_lab_'), 'SW must precache bundled track images');
     assert.ok(!swCode.includes('Physics-Ar-EB-part1'), 'SW must NOT precache 13.6 MB PDF');
-    assert.ok(swCode.includes('NetworkOnly'), 'SW must enforce NetworkOnly for /api/ai/*');
     assert.ok(swCode.includes('physics-smart-offline-media-v1'), 'SW must configure media CacheFirst store');
-    assert.ok(swCode.includes('NavigationRoute'), 'SW must handle offline SPA NavigationRoute');
+    assert.ok(swCode.includes('physics-smart'), 'SW must configure versioned cache prefix');
+
+    // Execute dist/sw.js inside a simulated ServiceWorkerGlobalScope to catch any Workbox runtime errors
+    // and verify install -> activate -> offline navigation (/, /curriculum, /exams, offline.html fallback)
+    const registeredListeners: Record<string, Function[]> = {};
+    const cacheBuckets = new Map<string, Map<string, Response>>();
+    let isNetworkOffline = false;
+
+    const getBucket = (name: string) => {
+      let bucket = cacheBuckets.get(name);
+      if (!bucket) {
+        bucket = new Map<string, Response>();
+        cacheBuckets.set(name, bucket);
+      }
+      return bucket;
+    };
+
+    const normalizeCacheKey = (reqOrUrl: Request | string) =>
+      typeof reqOrUrl === 'string'
+        ? new URL(reqOrUrl, 'https://physics-smart.vercel.app').href
+        : reqOrUrl.url;
+
+    const matchInBucket = (bucket: Map<string, Response>, reqOrUrl: Request | string, opts?: { ignoreSearch?: boolean }) => {
+      const targetUrl = new URL(normalizeCacheKey(reqOrUrl));
+      const direct = bucket.get(targetUrl.href);
+      if (direct) return direct.clone();
+      if (opts?.ignoreSearch) {
+        for (const [k, v] of bucket.entries()) {
+          const parsed = new URL(k);
+          if (parsed.origin === targetUrl.origin && parsed.pathname === targetUrl.pathname) {
+            return v.clone();
+          }
+        }
+      }
+      return undefined;
+    };
+
+    const mockCaches = {
+      open: async (name: string) => {
+        const bucket = getBucket(name);
+        return {
+          match: async (req: Request | string, opts?: { ignoreSearch?: boolean }) => matchInBucket(bucket, req, opts),
+          put: async (req: Request | string, res: Response) => {
+            bucket.set(normalizeCacheKey(req), res);
+          },
+          delete: async (req: Request | string) => bucket.delete(normalizeCacheKey(req)),
+          keys: async () => Array.from(bucket.keys()).map((u) => new Request(u)),
+        };
+      },
+      keys: async () => Array.from(cacheBuckets.keys()),
+      match: async (req: Request | string, opts?: { ignoreSearch?: boolean }) => {
+        for (const bucket of cacheBuckets.values()) {
+          const hit = matchInBucket(bucket, req, opts);
+          if (hit) return hit;
+        }
+        return undefined;
+      },
+      delete: async (name: string) => cacheBuckets.delete(name),
+    };
+
+    class MockFetchEvent {
+      type: string;
+      request: any;
+      private _onRespond?: (p: Promise<Response>) => void;
+      constructor(type: string, init: { request: any; onRespond?: (p: Promise<Response>) => void }) {
+        this.type = type;
+        this.request = init.request;
+        this._onRespond = init.onRespond;
+      }
+      respondWith(p: Promise<Response>) {
+        this._onRespond?.(p);
+      }
+      waitUntil() {}
+    }
+
+    const swSandbox: Record<string, any> = {
+      URL,
+      Headers,
+      Request,
+      Response,
+      FetchEvent: MockFetchEvent,
+      console,
+      setTimeout,
+      clearTimeout,
+      fetch: async (input: Request | string) => {
+        if (isNetworkOffline) {
+          throw new TypeError('Failed to fetch');
+        }
+        const urlStr = typeof input === 'string' ? input : input.url;
+        const pathname = new URL(urlStr, 'https://physics-smart.vercel.app').pathname;
+        if (pathname === '/index.html') {
+          return new Response('<!doctype html><html><body>PHYSICS_SMART_SHELL</body></html>', {
+            status: 200,
+            headers: { 'Content-Type': 'text/html; charset=utf-8' },
+          });
+        }
+        if (pathname === '/offline.html') {
+          return new Response('<!doctype html><html><body>OFFLINE_FALLBACK</body></html>', {
+            status: 200,
+            headers: { 'Content-Type': 'text/html; charset=utf-8' },
+          });
+        }
+        return new Response('ok', { status: 200 });
+      },
+      registration: { scope: 'https://physics-smart.vercel.app/' },
+      location: {
+        href: 'https://physics-smart.vercel.app/sw.js',
+        origin: 'https://physics-smart.vercel.app',
+      },
+      caches: mockCaches,
+      clients: { claim: async () => {} },
+      skipWaiting: async () => {},
+      addEventListener: (type: string, fn: Function) => {
+        registeredListeners[type] = registeredListeners[type] || [];
+        registeredListeners[type].push(fn);
+      },
+    };
+    swSandbox.self = swSandbox;
+    vm.runInNewContext(swCode, swSandbox);
+    assert.ok((registeredListeners['install'] || []).length >= 1, 'SW must register install handler');
+    assert.ok((registeredListeners['activate'] || []).length >= 1, 'SW must register activate handler');
+    assert.ok((registeredListeners['fetch'] || []).length >= 1, 'SW must register fetch handler');
+
+    // Dispatch install & activate while online to populate precache
+    const runLifecycleEvent = async (type: 'install' | 'activate') => {
+      const promises: Promise<any>[] = [];
+      for (const fn of registeredListeners[type] || []) {
+        fn({ type, waitUntil: (p: Promise<any>) => promises.push(p) });
+      }
+      await Promise.all(promises);
+    };
+    await runLifecycleEvent('install');
+    await runLifecycleEvent('activate');
+
+    // Switch network completely offline and test closing + reopening routes
+    isNetworkOffline = true;
+    const dispatchOfflineNavigate = async (routePath: string): Promise<Response> => {
+      const reqUrl = `https://physics-smart.vercel.app${routePath}`;
+      const navRequest: any = {
+        url: reqUrl,
+        method: 'GET',
+        mode: 'navigate',
+        destination: 'document',
+        headers: new Headers({ Accept: 'text/html' }),
+        clone() {
+          return this;
+        },
+      };
+      let responsePromise: Promise<Response> | null = null;
+      const evt = new MockFetchEvent('fetch', {
+        request: navRequest,
+        onRespond: (p) => {
+          responsePromise = p;
+        },
+      });
+      for (const fn of registeredListeners['fetch'] || []) {
+        fn(evt);
+      }
+      assert.ok(responsePromise, `SW fetch listener must handle navigation to ${routePath}`);
+      return await responsePromise!;
+    };
+
+    for (const route of ['/', '/curriculum', '/exams']) {
+      const res = await dispatchOfflineNavigate(route);
+      assert.equal(res.status, 200, `Offline launch ${route} must return HTTP 200`);
+      const html = await res.text();
+      assert.ok(html.includes('PHYSICS_SMART_SHELL'), `Offline launch ${route} must serve cached App Shell`);
+    }
+
+    // Verify fallback to /offline.html if cached index.html is unavailable
+    for (const bucket of cacheBuckets.values()) {
+      for (const key of Array.from(bucket.keys())) {
+        if (new URL(key).pathname === '/index.html') {
+          bucket.delete(key);
+        }
+      }
+    }
+    const fallbackRes = await dispatchOfflineNavigate('/');
+    assert.equal(fallbackRes.status, 200);
+    assert.ok((await fallbackRes.text()).includes('OFFLINE_FALLBACK'), 'SW must fall back to /offline.html when index.html is missing');
 
     const assets = fs.readdirSync(path.join(rootDir, 'dist', 'assets'));
     const entryJs = assets.find((f) => f.startsWith('index-') && f.endsWith('.js'));
@@ -110,7 +292,7 @@ async function runTests() {
     assert.ok(assets.some((f) => f.startsWith('ExamsView-')), 'ExamsView must be code-split');
     assert.ok(assets.some((f) => f.startsWith('VirtualLabView-')), 'VirtualLabView must be code-split');
     passed++;
-    console.log(`✓ Test 2 passed: Service Worker routes & Vite code splitting verified (entry=${formatBytes(entrySize)})`);
+    console.log(`✓ Test 2 passed: Service Worker VM execution, offline.html, routes & code splitting verified (entry=${formatBytes(entrySize)})`);
   }
 
   // Test 3: IndexedDB Schema, Security Sanitization, Exam Snapshot, Favorites & Notes

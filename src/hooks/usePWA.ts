@@ -84,14 +84,22 @@ export function useSWUpdates(options?: { deferReload?: boolean }) {
     needRefresh: [needRefresh, setNeedRefresh],
     updateServiceWorker,
   } = useRegisterSW({
+    immediate: true,
     onRegisteredSW(_swUrl, registration) {
       if (!registration) return;
-      // Check for new versions every 30 minutes when online
-      window.setInterval(() => {
-        if (navigator.onLine) {
+      const checkUpdate = () => {
+        if (typeof navigator !== 'undefined' && navigator.onLine !== false) {
           registration.update().catch(() => {});
         }
-      }, 30 * 60 * 1000);
+      };
+      // Check immediately if already installed earlier, then periodically and on network recovery
+      window.setInterval(checkUpdate, 30 * 60 * 1000);
+      window.addEventListener('online', checkUpdate);
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+          checkUpdate();
+        }
+      });
     },
     onRegisterError(err) {
       console.warn('Service worker registration warning:', err);

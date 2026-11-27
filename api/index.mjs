@@ -1,5 +1,6 @@
 // server.ts
 import express from "express";
+import http from "http";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -2230,10 +2231,14 @@ async function startServer() {
   if (process.env.VERCEL || process.env.NODE_ENV === "test" || process.env.DISABLE_AUTO_LISTEN === "true") {
     return;
   }
+  const httpServer = http.createServer(app);
   if (process.env.NODE_ENV !== "production") {
     const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        ws: { server: httpServer }
+      },
       appType: "spa"
     });
     app.use(vite.middlewares);
@@ -2244,7 +2249,7 @@ async function startServer() {
       res.sendFile(path.join(distPath, "index.html"));
     });
   }
-  app.listen(PORT, "0.0.0.0", () => {
+  httpServer.listen(PORT, "0.0.0.0", () => {
     console.log(`Physics Smart server listening on http://localhost:${PORT}`);
   });
 }

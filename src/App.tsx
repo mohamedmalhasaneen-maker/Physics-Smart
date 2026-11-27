@@ -390,32 +390,43 @@ export default function App() {
     };
     window.addEventListener('online', handleOnline);
 
-    // Inspect redirect sign-in result if returning from signInWithRedirect
-    getRedirectResult(auth, browserPopupRedirectResolver)
-      .then((result) => {
-        if (result?.user) {
-          setRedirectAuthError(null);
-          setRedirectPendingLink(null);
-        }
-      })
-      .catch(async (err) => {
-        logDevAuthError('getRedirectResult', err);
-        const code =
-          err && typeof err === 'object' && 'code' in err && typeof (err as any).code === 'string'
-            ? (err as any).code.toLowerCase()
-            : '';
-        if (code === 'auth/account-exists-with-different-credential') {
-          const pendingCred = GoogleAuthProvider.credentialFromError(err);
-          const conflictEmail = typeof (err as any)?.customData?.email === 'string' ? (err as any).customData.email : '';
-          const methods = conflictEmail ? await fetchSignInMethodsForEmail(auth, conflictEmail).catch(() => []) : [];
-          if (pendingCred) {
-            setRedirectPendingLink({ credential: pendingCred, email: conflictEmail, methods });
+    // Inspect redirect sign-in result only when online (avoids offline network stall)
+    if (!isBrowserOffline()) {
+      getRedirectResult(auth, browserPopupRedirectResolver)
+        .then((result) => {
+          if (result?.user) {
+            setRedirectAuthError(null);
+            setRedirectPendingLink(null);
           }
-        }
-        setRedirectAuthError(err);
-      });
+        })
+        .catch(async (err) => {
+          logDevAuthError('getRedirectResult', err);
+          const code =
+            err && typeof err === 'object' && 'code' in err && typeof (err as any).code === 'string'
+              ? (err as any).code.toLowerCase()
+              : '';
+          if (code === 'auth/account-exists-with-different-credential') {
+            const pendingCred = GoogleAuthProvider.credentialFromError(err);
+            const conflictEmail = typeof (err as any)?.customData?.email === 'string' ? (err as any).customData.email : '';
+            const methods = conflictEmail ? await fetchSignInMethodsForEmail(auth, conflictEmail).catch(() => []) : [];
+            if (pendingCred) {
+              setRedirectPendingLink({ credential: pendingCred, email: conflictEmail, methods });
+            }
+          }
+          setRedirectAuthError(err);
+        });
+    }
+
+    let settled = false;
+    const offlineAuthFailsafe = window.setTimeout(() => {
+      if (!settled && isBrowserOffline()) {
+        setAuthReady(true);
+      }
+    }, 2500);
 
     const unsub = onAuthStateChanged(auth, async (user) => {
+      settled = true;
+      window.clearTimeout(offlineAuthFailsafe);
       setFirebaseUser(user);
       if (!user) {
         setProfile(null);
@@ -594,6 +605,7 @@ export default function App() {
       }
     });
     return () => {
+      window.clearTimeout(offlineAuthFailsafe);
       window.removeEventListener('online', handleOnline);
       unsub();
     };

@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="ar" dir="rtl" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Physics Smart | وضع العمل دون اتصال</title>
+    <meta name="theme-color" content="#060B18" />
+    <link rel="icon" type="image/png" href="/assets/aistudio/__________________________425160ec.png" />
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: system-ui, -apple-system, 'Segoe UI', Tahoma, Arial, sans-serif;
+        background:
+          radial-gradient(circle at 18% 18%, rgba(37, 99, 235, 0.28), transparent 55%),
+          radial-gradient(circle at 82% 80%, rgba(6, 182, 212, 0.22), transparent 55%),
+          linear-gradient(145deg, #020510 0%, #060e24 52%, #091330 100%);
+        color: #f1f5f9;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 1.5rem;
+      }
+      .card {
+        width: 100%;
+        max-width: 460px;
+        border-radius: 1.25rem;
+        padding: 2rem 1.5rem;
+        background: rgba(11, 20, 44, 0.84);
+        border: 1px solid rgba(56, 189, 248, 0.24);
+        box-shadow: 0 24px 60px rgba(2, 6, 23, 0.65);
+        text-align: center;
+      }
+      .logo {
+        width: 72px;
+        height: 72px;
+        object-fit: contain;
+        margin: 0 auto 1rem;
+        display: block;
+      }
+      h1 {
+        margin: 0 0 0.5rem;
+        font-size: 1.35rem;
+        font-weight: 700;
+        color: #ffffff;
+      }
+      .subtitle {
+        margin: 0 0 1.25rem;
+        font-size: 0.92rem;
+        line-height: 1.65;
+        color: #cbd5e1;
+      }
+      .en-note {
+        margin: 0 0 1.5rem;
+        font-size: 0.82rem;
+        line-height: 1.55;
+        color: #94a3b8;
+        direction: ltr;
+      }
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+        justify-content: center;
+      }
+      button {
+        appearance: none;
+        border: 0;
+        border-radius: 0.85rem;
+        padding: 0.75rem 1.25rem;
+        font-size: 0.9rem;
+        font-weight: 600;
+        cursor: pointer;
+        transition: transform 0.15s ease, opacity 0.15s ease;
+      }
+      button:active {
+        transform: scale(0.97);
+      }
+      .btn-primary {
+        background: linear-gradient(135deg, #2563eb, #0ea5e9);
+        color: #ffffff;
+      }
+      .btn-secondary {
+        background: rgba(255, 255, 255, 0.08);
+        color: #e2e8f0;
+        border: 1px solid rgba(148, 163, 184, 0.28);
+      }
+      .status {
+        margin-top: 1.25rem;
+        font-size: 0.78rem;
+        color: #38bdf8;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="card">
+      <img
+        src="/assets/aistudio/__________________________425160ec.png"
+        alt="Physics Smart"
+        class="logo"
+      />
+      <h1>أنت غير متصل بالإنترنت حاليًا</h1>
+      <p class="subtitle">
+        تعذر تحميل هذه الصفحة من الشبكة، لكن يمكنك العودة إلى واجهة منصة
+        <strong>Physics Smart</strong>
+        لاستخدام الدروس والاختبارات والحاسبات المحفوظة محليًا.
+      </p>
+      <p class="en-note">
+        You are currently offline. Return to the cached Physics Smart app shell to access downloaded lessons, formulas, and saved progress.
+      </p>
+      <div class="actions">
+        <button class="btn-primary" type="button" onclick="window.location.assign('/')">
+          فتح المنصة (أوفلاين)
+        </button>
+        <button class="btn-secondary" type="button" onclick="window.location.reload()">
+          إعادة المحاولة
+        </button>
+      </div>
+      <p class="status" id="net-status">في انتظار عودة الاتصال بالإنترنت...</p>
+    </main>
+    <script>
+      window.addEventListener('online', function () {
+        var el = document.getElementById('net-status');
+        if (el) el.textContent = 'تم استعادة الاتصال — جارٍ إعادة التحميل...';
+        window.location.assign('/');
+      });
+    </script>
+  </body>
+</html>

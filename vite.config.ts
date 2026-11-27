@@ -10,10 +10,11 @@ export default defineConfig(() => {
       react(),
       tailwindcss(),
       VitePWA({
+        strategies: 'injectManifest',
+        srcDir: 'src',
+        filename: 'sw.ts',
         registerType: 'prompt',
-        includeAssets: [
-          'assets/aistudio/__________________________425160ec.png',
-        ],
+        injectRegister: false,
         manifest: {
           id: '/',
           name: 'Physics Smart | منصة الفيزياء الذكية',
@@ -44,60 +45,16 @@ export default defineConfig(() => {
             },
           ],
         },
-        workbox: {
-          globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2,ttf,jpg,jpeg,webp}'],
-          maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
-          cleanupOutdatedCaches: true,
-          navigateFallback: '/index.html',
-          navigateFallbackDenylist: [/^\/api\//],
-          runtimeCaching: [
-            {
-              urlPattern: /^\/api\/ai\/.*/i,
-              handler: 'NetworkOnly',
-            },
-            {
-              urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,
-              handler: 'CacheFirst',
-              options: {
-                cacheName: 'google-fonts-stylesheets',
-                expiration: {
-                  maxEntries: 12,
-                  maxAgeSeconds: 60 * 60 * 24 * 365,
-                },
-                cacheableResponse: {
-                  statuses: [0, 200],
-                },
-              },
-            },
-            {
-              urlPattern: /^https:\/\/fonts\.gstatic\.com\/.*/i,
-              handler: 'CacheFirst',
-              options: {
-                cacheName: 'google-fonts-webfonts',
-                expiration: {
-                  maxEntries: 30,
-                  maxAgeSeconds: 60 * 60 * 24 * 365,
-                },
-                cacheableResponse: {
-                  statuses: [0, 200],
-                },
-              },
-            },
-            {
-              urlPattern: /\/assets\/.*\.pdf$/i,
-              handler: 'CacheFirst',
-              options: {
-                cacheName: 'physics-smart-offline-media-v1',
-                expiration: {
-                  maxEntries: 25,
-                  maxAgeSeconds: 60 * 60 * 24 * 180,
-                },
-                cacheableResponse: {
-                  statuses: [0, 200],
-                },
-              },
-            },
+        injectManifest: {
+          globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2,ttf,jpg,jpeg,webp,webmanifest}'],
+          globIgnores: [
+            '**/Physics-Ar-EB-part1*.pdf',
+            'icon.svg',
+            'favicon.png',
+            'apple-touch-icon.png',
+            'pwa-*.png',
           ],
+          maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
         },
         devOptions: {
           enabled: true,

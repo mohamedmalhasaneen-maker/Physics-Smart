@@ -24,6 +24,7 @@ import { Language, StudyLanguage, ThemeMode, TrackId, UserProfile } from '../typ
 import { tFor } from '../i18n/translations';
 import { PhysicsAmbientBg } from './PhysicsAmbientBg';
 import { StudyLanguageSwitcher } from './BilingualBlock';
+import heroObservatoryImg from '../assets/images/hero_physics_observatory_1794579386979.jpg';
 import {
   Atom,
   ArrowRight,
@@ -524,7 +525,7 @@ export function AuthOnboarding({
                   <Atom className="w-24 h-24 text-cyan-400" />
                 </div>
                 <img
-                  src="/src/assets/images/hero_physics_observatory_1794579386979.jpg"
+                  src={heroObservatoryImg}
                   alt="Physics Smart Optical Observatory"
                   referrerPolicy="no-referrer"
                   onError={(e) => {

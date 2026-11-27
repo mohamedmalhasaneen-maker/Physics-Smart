@@ -1,4 +1,7 @@
 import { TrackId } from '../types/physics';
+import mechanicsLabImg from '../assets/images/track_mechanics_lab_1794579388169.jpg';
+import wavesOpticsLabImg from '../assets/images/track_waves_optics_lab_1794579389296.jpg';
+import electromagnetismLabImg from '../assets/images/track_electromagnetism_lab_1794579389569.jpg';
 
 export interface TrackDefinition {
   id: TrackId;
@@ -27,7 +30,7 @@ export const EDUCATIONAL_TRACKS: TrackDefinition[] = [
       'تنظيم متكامل حسب الصف الدراسي والمنهج المعتمد، مع تدريبات وأنماط امتحانات تحاكي النظام المصري وقابلية استيراد الكتب الرسمية.',
     descriptionEn:
       'Structured by national grade levels, chapters, and units with Egyptian exam-style questions and official textbook import support.',
-    image: '/src/assets/images/track_mechanics_lab_1794579388169.jpg',
+    image: mechanicsLabImg,
     grades: [
       { id: 'grade10', labelAr: 'الصف الأول الثانوي', labelEn: 'Grade 10 (1st Secondary)' },
       { id: 'grade11', labelAr: 'الصف الثاني الثانوي', labelEn: 'Grade 11 (2nd Secondary)' },
@@ -44,7 +47,7 @@ export const EDUCATIONAL_TRACKS: TrackDefinition[] = [
       'فصل كامل حسب المسارات والمقررات، شروحات مفاهيمية معمّقة، مسائل تطبيقية متنوعة، واختبارات لكل وحدة وموضوع.',
     descriptionEn:
       'Separated by Baccalaureate tracks and courses with deep conceptual explanations, applied numerical problems, and unit assessments.',
-    image: '/src/assets/images/track_waves_optics_lab_1794579389296.jpg',
+    image: wavesOpticsLabImg,
     grades: [
       { id: 'bac_year1', labelAr: 'السنة الأولى - المسار العام', labelEn: 'Year 1 - Foundation Physics' },
       { id: 'bac_year2', labelAr: 'السنة الثانية - مسار طب وعلوم الحياة', labelEn: 'Year 2 - Life Sciences Track' },
@@ -61,7 +64,7 @@ export const EDUCATIONAL_TRACKS: TrackDefinition[] = [
       'نظام تعليمي ثنائي اللغة بالكامل: شروحات عربية وإنجليزية، مصطلحات علمية متقابلة، قوانين الفيزياء، ومسائل وبنك أسئلة واختبارات بكل من العربية والإنجليزية أو معًا.',
     descriptionEn:
       'Complete bilingual system: Arabic & English explanations, paired scientific terminology, physics laws, AP-style problems, question bank, and exams in Arabic, English, or Bilingual mode.',
-    image: '/src/assets/images/track_electromagnetism_lab_1794579389569.jpg',
+    image: electromagnetismLabImg,
     grades: [
       { id: 'am_hs', labelAr: 'فيزياء المرحلة الثانوية الأمريكية (الصف 10-11) · High School Physics', labelEn: 'High School Physics (Grade 10-11)' },
       { id: 'am_ap1', labelAr: 'فيزياء AP 1 (القائمة على الجبر) · AP Physics 1', labelEn: 'AP Physics 1 (Algebra-Based)' },
