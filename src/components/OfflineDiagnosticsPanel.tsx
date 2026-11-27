@@ -282,6 +282,52 @@ export function OfflineDiagnosticsPanel({ lang }: OfflineDiagnosticsPanelProps) 
                 Fonts: {diag.fontCount} · Images: {diag.imageCount}
               </p>
             </div>
+
+            {/* 7. Persistent Storage & Quota */}
+            <div className="rounded-xl bg-white/50 dark:bg-white/[0.03] p-3 space-y-1 border border-slate-200/60 dark:border-white/10">
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                {lang === 'ar' ? 'التخزين الدائم (Persistence)' : 'Storage Persistence & Quota'}
+              </p>
+              <p className="font-bold font-mono-num">
+                {diag.storagePersisted === true
+                  ? lang === 'ar'
+                    ? 'مفعل (Persistent)'
+                    : 'Persistent (Protected)'
+                  : diag.storagePersisted === false
+                  ? lang === 'ar'
+                    ? 'Best-Effort'
+                    : 'Best-Effort'
+                  : 'Unknown'}
+              </p>
+              <p className="text-[11px] font-mono-num text-slate-500">
+                {diag.storageQuotaBytes > 0
+                  ? `${Math.round(diag.storageUsageBytes / (1024 * 1024))} / ${Math.round(diag.storageQuotaBytes / (1024 * 1024))} MB`
+                  : 'Quota N/A'}
+              </p>
+            </div>
+
+            {/* 8. Launch Mode & Tablet/Desktop-Site Hint */}
+            <div className="rounded-xl bg-white/50 dark:bg-white/[0.03] p-3 space-y-1 border border-slate-200/60 dark:border-white/10">
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                {lang === 'ar' ? 'وضع التشغيل والجهاز' : 'Launch & Form Factor'}
+              </p>
+              <p className="font-bold font-mono-num">
+                {diag.formFactorHint.displayMode} · {diag.formFactorHint.viewportWidth}px
+              </p>
+              <p className="text-[11px] text-slate-500">
+                {diag.formFactorHint.isDesktopModeTabletHint
+                  ? lang === 'ar'
+                    ? 'وضع سطح المكتب على جهاز لمس/تابلت'
+                    : 'Desktop-mode touch/tablet UA'
+                  : diag.formFactorHint.isTouchDevice
+                  ? lang === 'ar'
+                    ? 'جهاز لمس قياسي'
+                    : 'Touch device'
+                  : lang === 'ar'
+                  ? 'متصفح سطح مكتب'
+                  : 'Desktop browser'}
+              </p>
+            </div>
           </div>
 
           {diag.waitingState && (

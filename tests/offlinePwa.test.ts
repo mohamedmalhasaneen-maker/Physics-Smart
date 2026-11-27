@@ -68,10 +68,29 @@ async function runTests() {
     assert.ok(manifest.background_color);
     assert.ok(Array.isArray(manifest.icons) && manifest.icons.length >= 1);
 
+    const icon192 = manifest.icons.find(
+      (i: any) => i.src === '/assets/aistudio/logo-192x192.png' && i.sizes === '192x192' && i.type === 'image/png'
+    );
+    const icon512Any = manifest.icons.find(
+      (i: any) => i.src === '/assets/aistudio/logo-512x512.png' && i.sizes === '512x512' && i.purpose === 'any'
+    );
+    const icon512Maskable = manifest.icons.find(
+      (i: any) => i.src === '/assets/aistudio/logo-512x512.png' && i.sizes === '512x512' && i.purpose === 'maskable'
+    );
     const officialIcon = manifest.icons.find(
       (i: any) => i.src === '/assets/aistudio/__________________________425160ec.png' && i.type === 'image/png'
     );
-    assert.ok(officialIcon, 'Manifest must reference the official Physics Smart PNG logo');
+    assert.ok(icon192, 'Manifest must include 192x192 official PNG icon for Android/Tablet WebAPK');
+    assert.ok(icon512Any && icon512Maskable, 'Manifest must include separated 512x512 any & maskable PNG icons');
+    assert.ok(officialIcon, 'Manifest must reference the official 1254x1254 Physics Smart PNG logo');
+    assert.deepEqual(
+      readPngDimensions(path.join(rootDir, 'dist', 'assets', 'aistudio', 'logo-192x192.png')),
+      { width: 192, height: 192 }
+    );
+    assert.deepEqual(
+      readPngDimensions(path.join(rootDir, 'dist', 'assets', 'aistudio', 'logo-512x512.png')),
+      { width: 512, height: 512 }
+    );
     assert.deepEqual(
       readPngDimensions(path.join(rootDir, 'dist', 'assets', 'aistudio', '__________________________425160ec.png')),
       { width: 1254, height: 1254 }
@@ -248,7 +267,7 @@ async function runTests() {
     assert.equal(skipWaitingCalled, true, 'SW install must call skipWaiting() so updated SW never gets trapped in waiting');
     assert.equal(clientsClaimCalled, true, 'SW activate must call clients.claim() so controller is immediately active');
 
-    // Verify GET_DIAGNOSTICS message handler responds with live SW metadata
+    // Verify GET_DIAGNOSTICS message handler responds with live SW metadata + deferred media warm-up
     let diagPayload: any = null;
     for (const fn of registeredListeners['message'] || []) {
       fn({
@@ -256,25 +275,42 @@ async function runTests() {
         ports: [{ postMessage: (msg: any) => { diagPayload = msg; } }],
       });
     }
-    assert.ok(diagPayload && diagPayload.version && diagPayload.precacheCount > 10, 'SW GET_DIAGNOSTICS must reply with version and precacheCount');
+    assert.ok(
+      diagPayload && diagPayload.version && diagPayload.precacheCount > 10 && diagPayload.deferredMediaCount === 4,
+      'SW GET_DIAGNOSTICS must reply with version, core precacheCount, and 4 deferred media entries'
+    );
+    const warmedImagesBucket = cacheBuckets.get('physics-smart-images-v2');
+    assert.ok(
+      warmedImagesBucket && warmedImagesBucket.size === 4,
+      'SW activate must non-blockingly warm all 4 decorative background images into physics-smart-images-v2'
+    );
 
-    // Switch network completely offline and test closing + reopening routes
+    // Switch network completely offline and test closing + reopening routes for BOTH Phone & Tablet (Desktop-Site mode)
     isNetworkOffline = true;
-    const dispatchOfflineNavigate = async (routePath: string): Promise<Response> => {
+    const dispatchOfflineRequest = async (
+      routePath: string,
+      opts?: { mode?: 'navigate' | 'cors'; destination?: string; userAgent?: string }
+    ): Promise<Response> => {
       const reqUrl = `https://physics-smart.vercel.app${routePath}`;
-      const navRequest: any = {
+      const headers = new Headers({
+        Accept: opts?.mode === 'cors' ? 'application/manifest+json' : 'text/html',
+      });
+      if (opts?.userAgent) {
+        headers.set('User-Agent', opts.userAgent);
+      }
+      const reqObj: any = {
         url: reqUrl,
         method: 'GET',
-        mode: 'navigate',
-        destination: 'document',
-        headers: new Headers({ Accept: 'text/html' }),
+        mode: opts?.mode || 'navigate',
+        destination: opts?.destination ?? (opts?.mode === 'cors' ? '' : 'document'),
+        headers,
         clone() {
           return this;
         },
       };
       let responsePromise: Promise<Response> | null = null;
       const evt = new MockFetchEvent('fetch', {
-        request: navRequest,
+        request: reqObj,
         onRespond: (p) => {
           responsePromise = p;
         },
@@ -282,16 +318,36 @@ async function runTests() {
       for (const fn of registeredListeners['fetch'] || []) {
         fn(evt);
       }
-      assert.ok(responsePromise, `SW fetch listener must handle navigation to ${routePath}`);
+      assert.ok(responsePromise, `SW fetch listener must handle request to ${routePath}`);
       return await responsePromise!;
     };
 
+    // 1. Mobile Phone Offline Flows
     for (const route of ['/', '/curriculum', '/exams']) {
-      const res = await dispatchOfflineNavigate(route);
-      assert.equal(res.status, 200, `Offline launch ${route} must return HTTP 200`);
+      const res = await dispatchOfflineRequest(route, {
+        userAgent: 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 Mobile Chrome/130.0.0.0 Safari/537.36',
+      });
+      assert.equal(res.status, 200, `Mobile offline launch ${route} must return HTTP 200`);
       const html = await res.text();
-      assert.ok(html.includes('PHYSICS_SMART_SHELL'), `Offline launch ${route} must serve cached App Shell`);
+      assert.ok(html.includes('PHYSICS_SMART_SHELL'), `Mobile offline launch ${route} must serve cached App Shell`);
     }
+
+    // 2. Android Tablet Chrome Desktop-Site Mode & Installed PWA Query Params Offline Flows
+    const tabletDesktopUA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
+    for (const route of ['/', '/?source=pwa', '/?mode=standalone', '/curriculum', '/exams']) {
+      const res = await dispatchOfflineRequest(route, { userAgent: tabletDesktopUA });
+      assert.equal(res.status, 200, `Tablet desktop-mode offline launch ${route} must return HTTP 200`);
+      const html = await res.text();
+      assert.ok(html.includes('PHYSICS_SMART_SHELL'), `Tablet offline launch ${route} must serve cached App Shell`);
+    }
+    const offlineManifestRes = await dispatchOfflineRequest('/manifest.webmanifest', {
+      mode: 'cors',
+      destination: 'manifest',
+      userAgent: tabletDesktopUA,
+    });
+    assert.equal(offlineManifestRes.status, 200, 'Tablet installed PWA must be able to read /manifest.webmanifest offline');
+
+    const dispatchOfflineNavigate = (routePath: string) => dispatchOfflineRequest(routePath);
 
     // Verify fallback to /offline.html if cached index.html is unavailable
     for (const bucket of cacheBuckets.values()) {

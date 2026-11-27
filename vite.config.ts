@@ -32,16 +32,28 @@ export default defineConfig(() => {
           categories: ['education', 'science'],
           icons: [
             {
-              src: '/assets/aistudio/__________________________425160ec.png',
-              sizes: '1254x1254',
+              src: '/assets/aistudio/logo-192x192.png',
+              sizes: '192x192',
               type: 'image/png',
               purpose: 'any',
+            },
+            {
+              src: '/assets/aistudio/logo-512x512.png',
+              sizes: '512x512',
+              type: 'image/png',
+              purpose: 'any',
+            },
+            {
+              src: '/assets/aistudio/logo-512x512.png',
+              sizes: '512x512',
+              type: 'image/png',
+              purpose: 'maskable',
             },
             {
               src: '/assets/aistudio/__________________________425160ec.png',
               sizes: '1254x1254',
               type: 'image/png',
-              purpose: 'maskable',
+              purpose: 'any',
             },
           ],
         },

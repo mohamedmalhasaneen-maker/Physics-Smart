@@ -2244,8 +2244,25 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     const distPath = path.resolve(__dirname, "dist");
-    app.use(express.static(distPath));
+    app.use(
+      express.static(distPath, {
+        setHeaders: (res, filePath) => {
+          const normalized = filePath.replace(/\\/g, "/");
+          if (normalized.endsWith("/sw.js") || normalized.endsWith("/index.html") || normalized.endsWith("/offline.html")) {
+            res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+          }
+          if (normalized.endsWith("/sw.js")) {
+            res.setHeader("Service-Worker-Allowed", "/");
+          }
+          if (normalized.endsWith("/manifest.webmanifest")) {
+            res.setHeader("Content-Type", "application/manifest+json; charset=utf-8");
+            res.setHeader("Cache-Control", "no-cache, max-age=0, must-revalidate");
+          }
+        }
+      })
+    );
     app.get("*", (_req, res) => {
+      res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
       res.sendFile(path.join(distPath, "index.html"));
     });
   }

@@ -83,15 +83,52 @@ registerRoute(
   )
 );
 
-const precacheManifest = deduplicateManifest(self.__WB_MANIFEST || []);
+const rawManifest = deduplicateManifest(self.__WB_MANIFEST || []);
+const DEFERRED_MEDIA_PATTERN = /(?:^|\/)assets\/(hero_physics_observatory_|track_.*_lab_).*\.(jpe?g|webp)$/i;
 
-precacheAndRoute(precacheManifest, {
-  ignoreURLParametersMatching: [/^utm_/, /^fbclid$/, /^source$/],
+const deferredMediaUrls: string[] = [];
+const corePrecacheManifest: Array<PrecacheEntry | string> = [];
+
+for (const entry of rawManifest) {
+  const entryUrl = typeof entry === 'string' ? entry : entry.url;
+  if (DEFERRED_MEDIA_PATTERN.test(entryUrl)) {
+    deferredMediaUrls.push(entryUrl.startsWith('/') ? entryUrl : `/${entryUrl}`);
+  } else {
+    corePrecacheManifest.push(entry);
+  }
+}
+
+precacheAndRoute(corePrecacheManifest, {
+  ignoreURLParametersMatching: [/^utm_/, /^fbclid$/, /^source$/, /^mode$/, /^launcher$/],
 });
 
 // Clean up outdated precaches only during activation after the new SW is ready
 cleanupOutdatedCaches();
 clientsClaim();
+
+async function warmDeferredImages(): Promise<void> {
+  if (deferredMediaUrls.length === 0) return;
+  try {
+    const cache = await self.caches.open(IMAGES_CACHE);
+    await Promise.allSettled(
+      deferredMediaUrls.map(async (url) => {
+        try {
+          const existing = await cache.match(url);
+          if (existing && existing.ok) return;
+          const res = await fetch(url, { credentials: 'same-origin' });
+          const ct = res.headers.get('content-type') || '';
+          if (res && res.ok && res.status === 200 && !ct.includes('text/html')) {
+            await cache.put(url, res);
+          }
+        } catch {
+          // Non-blocking: never fail SW activation if decorative background fetch fails
+        }
+      })
+    );
+  } catch {
+    // Non-blocking
+  }
+}
 
 self.addEventListener('install', () => {
   // Activate immediately so fixed/updated SW takes control without getting stuck in waiting
@@ -110,16 +147,19 @@ self.addEventListener('activate', (event: any) => {
     GOOGLE_FONTS_BIN_CACHE,
   ]);
   event.waitUntil(
-    self.caches
-      .keys()
-      .then((keys) =>
-        Promise.all(
-          keys
-            .filter((key) => key.startsWith('physics-smart-') && !allowedCaches.has(key))
-            .map((key) => self.caches.delete(key))
+    Promise.all([
+      self.caches
+        .keys()
+        .then((keys) =>
+          Promise.all(
+            keys
+              .filter((key) => key.startsWith('physics-smart-') && !allowedCaches.has(key))
+              .map((key) => self.caches.delete(key))
+          )
         )
-      )
-      .catch(() => undefined)
+        .catch(() => undefined),
+      warmDeferredImages(),
+    ])
   );
 });
 
@@ -131,7 +171,8 @@ self.addEventListener('message', (event: any) => {
   if (event?.data?.type === 'GET_DIAGNOSTICS' && event.ports?.[0]) {
     event.ports[0].postMessage({
       version: CACHE_VERSION,
-      precacheCount: precacheManifest.length,
+      precacheCount: corePrecacheManifest.length,
+      deferredMediaCount: deferredMediaUrls.length,
     });
   }
 });
@@ -155,7 +196,8 @@ async function handleAppNavigation(request: Request): Promise<Response> {
     const precachedShell =
       (await matchPrecache('/index.html')) ||
       (await matchPrecache('index.html')) ||
-      (await self.caches.match('/index.html', { ignoreSearch: true }));
+      (await self.caches.match('/index.html', { ignoreSearch: true })) ||
+      (await self.caches.match('/', { ignoreSearch: true }));
     if (precachedShell && precachedShell.ok) {
       return await ensureCleanNavigationResponse(precachedShell);
     }
@@ -200,9 +242,22 @@ registerRoute(
     const cached =
       (await matchPrecache('/offline.html')) ||
       (await matchPrecache('offline.html')) ||
-      (await self.caches.match('/offline.html'));
+      (await self.caches.match('/offline.html', { ignoreSearch: true }));
     if (cached) return cached;
     return fetch('/offline.html');
+  }
+);
+
+// Explicit route for /manifest.webmanifest so tablet PWA metadata never fails offline
+registerRoute(
+  ({ url }) => url.origin === self.location.origin && url.pathname === '/manifest.webmanifest',
+  async () => {
+    const cached =
+      (await matchPrecache('/manifest.webmanifest')) ||
+      (await matchPrecache('manifest.webmanifest')) ||
+      (await self.caches.match('/manifest.webmanifest', { ignoreSearch: true }));
+    if (cached) return cached;
+    return fetch('/manifest.webmanifest');
   }
 );
 

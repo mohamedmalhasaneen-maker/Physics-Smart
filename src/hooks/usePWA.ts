@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useRegisterSW } from 'virtual:pwa-register/react';
+import { requestPersistentStorage } from '../lib/offlineDb';
 import { recordPwaDiagError } from '../lib/pwaDiagnostics';
 
 export interface BeforeInstallPromptEvent extends Event {
@@ -34,10 +35,16 @@ export function usePWAInstall() {
   useEffect(() => {
     const standalone =
       window.matchMedia('(display-mode: standalone)').matches ||
+      window.matchMedia('(display-mode: minimal-ui)').matches ||
+      window.matchMedia('(display-mode: fullscreen)').matches ||
       (navigator as any).standalone === true;
     setIsInstalled(standalone);
 
-    const ios = /iPad|iPhone|iPod/.test(navigator.userAgent) && !(window as any).MSStream;
+    const ua = navigator.userAgent || '';
+    // iPadOS 13+ reports Macintosh in UA while exposing multi-touch capability
+    const isTouchMacTablet =
+      /Macintosh/.test(ua) && typeof navigator.maxTouchPoints === 'number' && navigator.maxTouchPoints > 1;
+    const ios = (/iPad|iPhone|iPod/.test(ua) || isTouchMacTablet) && !(window as any).MSStream;
     setIsIOS(ios);
 
     const onPrompt = (e: Event) => {
@@ -47,6 +54,7 @@ export function usePWAInstall() {
     const onInstalled = () => {
       setIsInstalled(true);
       setDeferredPrompt(null);
+      void requestPersistentStorage();
     };
 
     window.addEventListener('beforeinstallprompt', onPrompt);
@@ -120,11 +128,15 @@ export function useSWUpdates(options?: { deferReload?: boolean }) {
     onRegisteredSW(_swUrl, registration) {
       if (!registration) return;
 
+      void requestPersistentStorage();
+
       const watchWorker = (worker: ServiceWorker | null) => {
         if (!worker) return;
         worker.addEventListener('statechange', () => {
           if (worker.state === 'redundant') {
             recordPwaDiagError('install', `Service Worker (${worker.scriptURL}) became redundant during install/update.`);
+          } else if (worker.state === 'activated') {
+            void requestPersistentStorage();
           }
         });
       };

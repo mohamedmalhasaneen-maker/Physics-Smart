@@ -42,7 +42,18 @@ export interface PwaDiagnosticsSnapshot {
     responded: boolean;
     version?: string;
     precacheCount?: number;
+    deferredMediaCount?: number;
   } | null;
+  storagePersisted: boolean | null;
+  storageQuotaBytes: number;
+  storageUsageBytes: number;
+  formFactorHint: {
+    displayMode: 'standalone' | 'minimal-ui' | 'fullscreen' | 'browser';
+    maxTouchPoints: number;
+    isTouchDevice: boolean;
+    isDesktopModeTabletHint: boolean;
+    viewportWidth: number;
+  };
 }
 
 const DIAG_STORAGE_KEY = 'ps_pwa_diag_errors_v1';
@@ -108,6 +119,7 @@ async function pingActiveServiceWorker(controller: ServiceWorker | null): Promis
   responded: boolean;
   version?: string;
   precacheCount?: number;
+  deferredMediaCount?: number;
 } | null> {
   if (!controller || typeof MessageChannel === 'undefined') return null;
   return new Promise((resolve) => {
@@ -124,6 +136,7 @@ async function pingActiveServiceWorker(controller: ServiceWorker | null): Promis
           responded: true,
           version: typeof data.version === 'string' ? data.version : undefined,
           precacheCount: typeof data.precacheCount === 'number' ? data.precacheCount : undefined,
+          deferredMediaCount: typeof data.deferredMediaCount === 'number' ? data.deferredMediaCount : undefined,
         });
       } else {
         resolve({ responded: true });
@@ -265,6 +278,48 @@ export async function collectPwaDiagnostics(): Promise<PwaDiagnosticsSnapshot> {
     }
   }
 
+  let storagePersisted: boolean | null = null;
+  let storageQuotaBytes = 0;
+  let storageUsageBytes = 0;
+  if (typeof navigator !== 'undefined' && navigator.storage) {
+    try {
+      if (typeof navigator.storage.persisted === 'function') {
+        storagePersisted = await navigator.storage.persisted();
+      }
+    } catch {
+      // non-blocking
+    }
+    try {
+      if (typeof navigator.storage.estimate === 'function') {
+        const est = await navigator.storage.estimate();
+        storageQuotaBytes = est.quota || 0;
+        storageUsageBytes = est.usage || 0;
+      }
+    } catch {
+      // non-blocking
+    }
+  }
+
+  let displayMode: PwaDiagnosticsSnapshot['formFactorHint']['displayMode'] = 'browser';
+  if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
+    if (
+      window.matchMedia('(display-mode: standalone)').matches ||
+      (navigator as any).standalone === true
+    ) {
+      displayMode = 'standalone';
+    } else if (window.matchMedia('(display-mode: minimal-ui)').matches) {
+      displayMode = 'minimal-ui';
+    } else if (window.matchMedia('(display-mode: fullscreen)').matches) {
+      displayMode = 'fullscreen';
+    }
+  }
+  const maxTouchPoints = typeof navigator !== 'undefined' ? navigator.maxTouchPoints || 0 : 0;
+  const ua = typeof navigator !== 'undefined' ? navigator.userAgent || '' : '';
+  const isTouchDevice = maxTouchPoints > 0 || (typeof window !== 'undefined' && 'ontouchstart' in window);
+  const isDesktopModeTabletHint =
+    isTouchDevice && (/X11;\s*Linux/i.test(ua) || (/Macintosh/i.test(ua) && maxTouchPoints > 1));
+  const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 0;
+
   const allErrors = readPwaDiagErrors();
   const registrationAndCacheErrors = allErrors.filter(
     (e) => e.category === 'registration' || e.category === 'install' || e.category === 'cache'
@@ -296,6 +351,16 @@ export async function collectPwaDiagnostics(): Promise<PwaDiagnosticsSnapshot> {
     registrationAndCacheErrors,
     lastOfflineError,
     swPingInfo,
+    storagePersisted,
+    storageQuotaBytes,
+    storageUsageBytes,
+    formFactorHint: {
+      displayMode,
+      maxTouchPoints,
+      isTouchDevice,
+      isDesktopModeTabletHint,
+      viewportWidth,
+    },
   };
 }
 
