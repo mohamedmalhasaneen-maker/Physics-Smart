@@ -83,13 +83,20 @@ registerRoute(
   )
 );
 
-precacheAndRoute(deduplicateManifest(self.__WB_MANIFEST || []), {
+const precacheManifest = deduplicateManifest(self.__WB_MANIFEST || []);
+
+precacheAndRoute(precacheManifest, {
   ignoreURLParametersMatching: [/^utm_/, /^fbclid$/, /^source$/],
 });
 
 // Clean up outdated precaches only during activation after the new SW is ready
 cleanupOutdatedCaches();
 clientsClaim();
+
+self.addEventListener('install', () => {
+  // Activate immediately so fixed/updated SW takes control without getting stuck in waiting
+  void self.skipWaiting();
+});
 
 self.addEventListener('activate', (event: any) => {
   const activePrecacheName = cacheNames.precache;
@@ -119,42 +126,62 @@ self.addEventListener('activate', (event: any) => {
 self.addEventListener('message', (event: any) => {
   if (event?.data?.type === 'SKIP_WAITING') {
     self.skipWaiting();
+    return;
+  }
+  if (event?.data?.type === 'GET_DIAGNOSTICS' && event.ports?.[0]) {
+    event.ports[0].postMessage({
+      version: CACHE_VERSION,
+      precacheCount: precacheManifest.length,
+    });
   }
 });
 
-// 2. App Shell Navigation: Serve precached index.html immediately offline & online;
+// Chrome rejects Service Worker navigation responses if response.redirected is true
+async function ensureCleanNavigationResponse(response: Response): Promise<Response> {
+  if (!response.redirected) return response;
+  const headers = new Headers(response.headers);
+  const body = await response.clone().arrayBuffer();
+  return new Response(body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
+// 3. App Shell Navigation: Serve precached index.html immediately offline & online;
 // fall back to precached offline.html if index.html is unavailable.
 async function handleAppNavigation(request: Request): Promise<Response> {
   try {
     const precachedShell =
       (await matchPrecache('/index.html')) ||
       (await matchPrecache('index.html')) ||
-      (await self.caches.match('/index.html'));
+      (await self.caches.match('/index.html', { ignoreSearch: true }));
     if (precachedShell && precachedShell.ok) {
-      return precachedShell;
+      return await ensureCleanNavigationResponse(precachedShell);
     }
 
     const networkResponse = await fetch(request);
     if (networkResponse && networkResponse.ok && networkResponse.status === 200) {
-      const contentType = networkResponse.headers.get('content-type') || '';
+      const cleanNet = await ensureCleanNavigationResponse(networkResponse);
+      const contentType = cleanNet.headers.get('content-type') || '';
       if (contentType.includes('text/html')) {
         const cache = await self.caches.open(PAGES_CACHE);
-        await cache.put('/index.html', networkResponse.clone());
+        await cache.put('/index.html', cleanNet.clone());
       }
-      return networkResponse;
+      return cleanNet;
     }
   } catch {
     // Offline or network failed; continue to offline fallback chain below
   }
 
   const fallbackPage =
-    (await self.caches.match('/index.html')) ||
+    (await self.caches.match('/index.html', { ignoreSearch: true })) ||
     (await matchPrecache('/offline.html')) ||
     (await matchPrecache('offline.html')) ||
-    (await self.caches.match('/offline.html'));
+    (await self.caches.match('/offline.html', { ignoreSearch: true }));
 
   if (fallbackPage) {
-    return fallbackPage;
+    return await ensureCleanNavigationResponse(fallbackPage);
   }
 
   return new Response(
@@ -277,11 +304,11 @@ setCatchHandler(async ({ request }) => {
     const cached =
       (await matchPrecache('/index.html')) ||
       (await matchPrecache('index.html')) ||
-      (await self.caches.match('/index.html')) ||
+      (await self.caches.match('/index.html', { ignoreSearch: true })) ||
       (await matchPrecache('/offline.html')) ||
       (await matchPrecache('offline.html')) ||
-      (await self.caches.match('/offline.html'));
-    if (cached) return cached;
+      (await self.caches.match('/offline.html', { ignoreSearch: true }));
+    if (cached) return await ensureCleanNavigationResponse(cached);
   }
   return Response.error();
 });

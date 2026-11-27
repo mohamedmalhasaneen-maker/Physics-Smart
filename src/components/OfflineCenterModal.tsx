@@ -42,6 +42,7 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
+import { OfflineDiagnosticsPanel } from './OfflineDiagnosticsPanel';
 
 interface OfflineCenterModalProps {
   open: boolean;
@@ -670,6 +671,9 @@ export function OfflineCenterModal({
                   <span>{lang === 'ar' ? 'مزامنة الآن' : 'Sync Now'}</span>
                 </button>
               </div>
+
+              {/* Developer PWA & Offline Diagnostics */}
+              <OfflineDiagnosticsPanel lang={lang} />
             </div>
           )}
 

@@ -97,7 +97,8 @@ async function runTests() {
 
     assert.ok(swCode.includes('index.html'), 'SW must precache index.html');
     assert.ok(swCode.includes('offline.html'), 'SW must precache offline.html fallback');
-    assert.ok(swCode.includes('KaTeX_'), 'SW must precache KaTeX math fonts for offline equations');
+    assert.ok(swCode.includes('KaTeX_') && swCode.includes('.woff2'), 'SW must precache KaTeX woff2 fonts');
+    assert.ok(!/KaTeX_[^"']+\.(ttf|woff)["']/.test(swCode), 'SW must exclude legacy .ttf/.woff KaTeX fonts from install precache');
     assert.ok(swCode.includes('hero_physics_observatory_'), 'SW must precache bundled hero observatory image');
     assert.ok(swCode.includes('track_mechanics_lab_'), 'SW must precache bundled track images');
     assert.ok(!swCode.includes('Physics-Ar-EB-part1'), 'SW must NOT precache 13.6 MB PDF');
@@ -177,6 +178,9 @@ async function runTests() {
       waitUntil() {}
     }
 
+    let skipWaitingCalled = false;
+    let clientsClaimCalled = false;
+
     const swSandbox: Record<string, any> = {
       URL,
       Headers,
@@ -212,8 +216,14 @@ async function runTests() {
         origin: 'https://physics-smart.vercel.app',
       },
       caches: mockCaches,
-      clients: { claim: async () => {} },
-      skipWaiting: async () => {},
+      clients: {
+        claim: async () => {
+          clientsClaimCalled = true;
+        },
+      },
+      skipWaiting: async () => {
+        skipWaitingCalled = true;
+      },
       addEventListener: (type: string, fn: Function) => {
         registeredListeners[type] = registeredListeners[type] || [];
         registeredListeners[type].push(fn);
@@ -235,6 +245,18 @@ async function runTests() {
     };
     await runLifecycleEvent('install');
     await runLifecycleEvent('activate');
+    assert.equal(skipWaitingCalled, true, 'SW install must call skipWaiting() so updated SW never gets trapped in waiting');
+    assert.equal(clientsClaimCalled, true, 'SW activate must call clients.claim() so controller is immediately active');
+
+    // Verify GET_DIAGNOSTICS message handler responds with live SW metadata
+    let diagPayload: any = null;
+    for (const fn of registeredListeners['message'] || []) {
+      fn({
+        data: { type: 'GET_DIAGNOSTICS' },
+        ports: [{ postMessage: (msg: any) => { diagPayload = msg; } }],
+      });
+    }
+    assert.ok(diagPayload && diagPayload.version && diagPayload.precacheCount > 10, 'SW GET_DIAGNOSTICS must reply with version and precacheCount');
 
     // Switch network completely offline and test closing + reopening routes
     isNetworkOffline = true;

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useRegisterSW } from 'virtual:pwa-register/react';
+import { recordPwaDiagError } from '../lib/pwaDiagnostics';
 
 export interface BeforeInstallPromptEvent extends Event {
   prompt(): Promise<void>;
@@ -79,6 +80,37 @@ export function useSWUpdates(options?: { deferReload?: boolean }) {
   const [updateDismissed, setUpdateDismissed] = useState(false);
   const [updating, setUpdating] = useState(false);
 
+  useEffect(() => {
+    const onWindowError = (event: ErrorEvent) => {
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+        recordPwaDiagError('offline', event.message || 'Offline script error');
+      }
+    };
+    const onRejection = (event: PromiseRejectionEvent) => {
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+        recordPwaDiagError('offline', event.reason || 'Offline promise rejection');
+      }
+    };
+    const onSwMessage = (event: MessageEvent) => {
+      if (event?.data?.type === 'SW_DIAG_ERROR') {
+        recordPwaDiagError('offline', event.data.message || 'Service Worker offline error');
+      }
+    };
+
+    window.addEventListener('error', onWindowError);
+    window.addEventListener('unhandledrejection', onRejection);
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.addEventListener('message', onSwMessage);
+    }
+    return () => {
+      window.removeEventListener('error', onWindowError);
+      window.removeEventListener('unhandledrejection', onRejection);
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.removeEventListener('message', onSwMessage);
+      }
+    };
+  }, []);
+
   const {
     offlineReady: [offlineReady, setOfflineReady],
     needRefresh: [needRefresh, setNeedRefresh],
@@ -87,12 +119,30 @@ export function useSWUpdates(options?: { deferReload?: boolean }) {
     immediate: true,
     onRegisteredSW(_swUrl, registration) {
       if (!registration) return;
+
+      const watchWorker = (worker: ServiceWorker | null) => {
+        if (!worker) return;
+        worker.addEventListener('statechange', () => {
+          if (worker.state === 'redundant') {
+            recordPwaDiagError('install', `Service Worker (${worker.scriptURL}) became redundant during install/update.`);
+          }
+        });
+      };
+
+      watchWorker(registration.installing);
+      registration.addEventListener('updatefound', () => {
+        watchWorker(registration.installing);
+      });
+
       const checkUpdate = () => {
         if (typeof navigator !== 'undefined' && navigator.onLine !== false) {
-          registration.update().catch(() => {});
+          registration.update().catch((err) => {
+            recordPwaDiagError('registration', err);
+          });
         }
       };
-      // Check immediately if already installed earlier, then periodically and on network recovery
+
+      checkUpdate();
       window.setInterval(checkUpdate, 30 * 60 * 1000);
       window.addEventListener('online', checkUpdate);
       document.addEventListener('visibilitychange', () => {
@@ -102,6 +152,7 @@ export function useSWUpdates(options?: { deferReload?: boolean }) {
       });
     },
     onRegisterError(err) {
+      recordPwaDiagError('registration', err);
       console.warn('Service worker registration warning:', err);
     },
   });

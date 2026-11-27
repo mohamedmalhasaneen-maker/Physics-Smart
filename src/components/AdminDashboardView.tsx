@@ -12,6 +12,7 @@ import {
 import { EDUCATIONAL_TRACKS, getGradeLabel, getTrackLabel } from '../data/tracks';
 import { pickStudyText } from '../lib/bilingual';
 import { BilingualTextBlock, BilingualTitle } from './BilingualBlock';
+import { OfflineDiagnosticsPanel } from './OfflineDiagnosticsPanel';
 import { Plus, Trash2, Upload, Shield, CheckCircle2 } from 'lucide-react';
 
 interface AdminDashboardViewProps {
@@ -557,38 +558,42 @@ export function AdminDashboardView({
 
       {/* TAB 6: SETTINGS & ANNOUNCEMENTS */}
       {tab === 'settings' && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <form onSubmit={handlePostAnnouncement} className="glass-card rounded-2xl p-6 space-y-3">
-            <h2 className="text-base font-bold">{lang === 'ar' ? 'إرسال إشعار للطلاب' : 'Publish Student Notification'}</h2>
-            <input required placeholder="عنوان الإشعار (عربي)" value={annTitleAr} onChange={(e) => setAnnTitleAr(e.target.value)} className="glass-input w-full px-3 py-2 rounded-xl text-xs" />
-            <input dir="ltr" placeholder="Title (English)" value={annTitleEn} onChange={(e) => setAnnTitleEn(e.target.value)} className="glass-input w-full px-3 py-2 rounded-xl text-xs" />
-            <textarea required rows={3} placeholder="نص الإشعار (عربي)..." value={annBodyAr} onChange={(e) => setAnnBodyAr(e.target.value)} className="glass-input w-full p-3 rounded-xl text-xs" />
-            <textarea rows={3} dir="ltr" placeholder="Announcement Body (English)..." value={annBodyEn} onChange={(e) => setAnnBodyEn(e.target.value)} className="glass-input w-full p-3 rounded-xl text-xs" />
-            <button type="submit" className="glass-btn-primary px-4 py-2.5 rounded-xl text-xs font-semibold cursor-pointer">
-              {lang === 'ar' ? 'إرسال الإشعار' : 'Send Notification'}
-            </button>
-          </form>
+        <div className="space-y-6">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <form onSubmit={handlePostAnnouncement} className="glass-card rounded-2xl p-6 space-y-3">
+              <h2 className="text-base font-bold">{lang === 'ar' ? 'إرسال إشعار للطلاب' : 'Publish Student Notification'}</h2>
+              <input required placeholder="عنوان الإشعار (عربي)" value={annTitleAr} onChange={(e) => setAnnTitleAr(e.target.value)} className="glass-input w-full px-3 py-2 rounded-xl text-xs" />
+              <input dir="ltr" placeholder="Title (English)" value={annTitleEn} onChange={(e) => setAnnTitleEn(e.target.value)} className="glass-input w-full px-3 py-2 rounded-xl text-xs" />
+              <textarea required rows={3} placeholder="نص الإشعار (عربي)..." value={annBodyAr} onChange={(e) => setAnnBodyAr(e.target.value)} className="glass-input w-full p-3 rounded-xl text-xs" />
+              <textarea rows={3} dir="ltr" placeholder="Announcement Body (English)..." value={annBodyEn} onChange={(e) => setAnnBodyEn(e.target.value)} className="glass-input w-full p-3 rounded-xl text-xs" />
+              <button type="submit" className="glass-btn-primary px-4 py-2.5 rounded-xl text-xs font-semibold cursor-pointer">
+                {lang === 'ar' ? 'إرسال الإشعار' : 'Send Notification'}
+              </button>
+            </form>
 
-          <div className="glass-card rounded-2xl p-6 space-y-3">
-            <h2 className="text-base font-bold">{lang === 'ar' ? 'الإشعارات النشطة' : 'Active Announcements'}</h2>
-            {announcements.map((a) => (
-              <div key={a.id} className="glass-subcard p-3.5 rounded-xl text-xs space-y-1.5">
-                <BilingualTitle
-                  ar={a.titleAr}
-                  en={a.titleEn}
-                  studyLang={studyLang}
-                  as="p"
-                  className="font-bold"
-                />
-                <BilingualTextBlock
-                  ar={a.bodyAr}
-                  en={a.bodyEn}
-                  studyLang={studyLang}
-                  className="text-slate-500 dark:text-slate-400"
-                />
-              </div>
-            ))}
+            <div className="glass-card rounded-2xl p-6 space-y-3">
+              <h2 className="text-base font-bold">{lang === 'ar' ? 'الإشعارات النشطة' : 'Active Announcements'}</h2>
+              {announcements.map((a) => (
+                <div key={a.id} className="glass-subcard p-3.5 rounded-xl text-xs space-y-1.5">
+                  <BilingualTitle
+                    ar={a.titleAr}
+                    en={a.titleEn}
+                    studyLang={studyLang}
+                    as="p"
+                    className="font-bold"
+                  />
+                  <BilingualTextBlock
+                    ar={a.bodyAr}
+                    en={a.bodyEn}
+                    studyLang={studyLang}
+                    className="text-slate-500 dark:text-slate-400"
+                  />
+                </div>
+              ))}
+            </div>
           </div>
+
+          <OfflineDiagnosticsPanel lang={lang} />
         </div>
       )}
     </div>

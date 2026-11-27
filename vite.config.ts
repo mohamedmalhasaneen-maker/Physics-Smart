@@ -49,6 +49,8 @@ export default defineConfig(() => {
           globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2,ttf,jpg,jpeg,webp,webmanifest}'],
           globIgnores: [
             '**/Physics-Ar-EB-part1*.pdf',
+            '**/KaTeX_*.ttf',
+            '**/KaTeX_*.woff',
             'icon.svg',
             'favicon.png',
             'apple-touch-icon.png',
